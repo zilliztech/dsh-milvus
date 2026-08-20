@@ -12,12 +12,16 @@ future identity, subject to Zilliz authorization, is `@zilliz/dsh-milvus`.
 - Supports local Docker Milvus Standalone and Zilliz Cloud.
 - Stores endpoint/database settings separately from credentials.
 - Binds a new live dsh session to one profile; later profile changes do not
-  silently change that session's Milvus target. Start a new chat after a Web
-  restart before using Milvus tools.
+  silently change that session's Milvus target. A session's binding is fixed
+  when its first message arrives, so changing or removing the active profile
+  only affects sessions started afterward — start a new chat after changing
+  profiles before using Milvus tools.
 - Exposes only `milvus_list_collections`, `milvus_describe_collection`, and
   `milvus_query`.
 - Returns scalar fields only. `milvus_query` defaults to 10 rows and accepts at
-  most 50.
+  most 50, and its filter accepts Milvus scalar expressions including
+  functions such as `json_contains`, `array_contains`, `array_length`, and
+  `text_match` while still rejecting unknown field references.
 
 It does not create, change, or delete Milvus data. It does not perform vector
 or hybrid search, create embeddings, paginate, export data, or administer
@@ -44,6 +48,25 @@ npx --yes @deepseek-ai/dsh@0.1.0-rc.7 web
 ```
 
 Restart dsh Web after adding or updating the local package.
+
+### Hot reload without restarting dsh Web
+
+`dsh plugin add` registers the plugin in the profile's bundle layer, which is
+fixed at startup. If you only need the plugin for the current dsh Web session
+and prefer not to restart, add its row to the profile's live patch layer
+instead — dsh Web watches `cordis.patch.yml` and hot-mounts inserted rows:
+
+```bash
+# ~/.dsh/profiles/web/cordis.patch.yml
+- insert:
+    - id: dsh-milvus
+      name: dsh-milvus
+```
+
+The host tools and Settings card become available immediately; refresh the
+page to load the client card. The patch row persists across restarts, so
+prefer it over the bundle layer when you want the plugin to survive reboots
+without an extra `dsh plugin add`.
 
 For development checks, use the project's Node version and run:
 
@@ -97,6 +120,30 @@ endpoint region, database name if non-sensitive, and plugin/SDK versions.
 - Obtain authorization before changing the name to `@zilliz/dsh-milvus`, making
   the package public, or presenting it as an official Zilliz release.
 - Publish only from the authorized npm scope and GitHub repository.
+
+### Publishing to npm (`@zilliz/dsh-milvus`)
+
+The package is intentionally unpublished and named `dsh-milvus` until Zilliz
+authorizes the public identity `@zilliz/dsh-milvus`. Publishing requires:
+
+1. **Zilliz authorization** to use the `@zilliz` npm scope and the
+   `zilliztech/dsh-milvus` repository for an official release. The npm scope
+   itself is Zilliz-owned (it already hosts `@zilliz/milvus2-sdk-node`), so the
+   blocker is organizational approval, not name availability.
+2. **npm publish credentials** for the `@zilliz` scope. Verify with
+   `npm whoami` and `npm access ls packages @zilliz`; the account must be an
+   owner of `@zilliz/dsh-milvus` (or the scope) with `publish` permission.
+3. **Metadata edits** that go with the rename, all in one commit:
+   - `package.json`: `"name": "@zilliz/dsh-milvus"`, remove `"private": true`,
+     set a real version, and add the `repository`/`homepage` fields.
+   - `cordis.patch.yml`: change `name: dsh-milvus` to `name: @zilliz/dsh-milvus`
+     (the loader resolves plugin rows by package name, so the two must match).
+   - `client.js`: keep the `dsh-milvus` bundle id (it is the plugin's stable
+     identity inside dsh Web) — only the npm package name changes.
+4. Publish with `npm publish --access public` from the authorized scope.
+
+The GitHub PR path does not need these steps: upstream review can merge the
+code while the package stays private and unpublished.
 
 ## License
 

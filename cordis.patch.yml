@@ -1,3 +1,9 @@
+# dsh-milvus bundle patch: inserts the Milvus for DSH plugin into a DSH
+# profile's plugin tree.
+#
+# `name` must equal the npm package name: the cordis loader imports the row's
+# name, so a published install resolves `@zilliz/dsh-milvus` and a local path
+# install links this checkout under the same name.
 - insert:
     - id: dsh-milvus
-      name: dsh-milvus
+      name: '@zilliz/dsh-milvus'

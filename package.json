@@ -1,14 +1,21 @@
 {
-  "name": "dsh-milvus",
-  "version": "0.0.0-development",
-  "private": true,
-  "description": "Milvus for DSH — development package",
+  "name": "@zilliz/dsh-milvus",
+  "version": "0.1.0",
+  "description": "Milvus for DSH — a read-only dsh Web plugin for Agent and RAG developers",
   "type": "module",
   "main": "./index.mjs",
   "exports": {
     ".": "./index.mjs",
     "./client": "./client.js",
     "./package.json": "./package.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zilliztech/dsh-milvus.git"
+  },
+  "homepage": "https://github.com/zilliztech/dsh-milvus",
+  "bugs": {
+    "url": "https://github.com/zilliztech/dsh-milvus/issues"
   },
   "files": [
     "index.mjs",
