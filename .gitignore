@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# Local development artifacts
+.memsearch/
+.scratch/
+
+# Logs and OS files
+*.log
+.DS_Store
+
+# Editor/IDE
+.vscode/
+.idea/
