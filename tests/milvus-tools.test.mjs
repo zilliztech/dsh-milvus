@@ -218,3 +218,57 @@ test('blocks vector fields, unknown filter fields, and excessive query limits be
   })
   assert.equal(queryCalls, 0)
 })
+
+test('filter validation accepts Milvus scalar functions while still blocking real unknown fields', async () => {
+  const { registerMilvusTools } = await import('../milvus-tools.mjs')
+  const registered = []
+  const requests = []
+  const collection = {
+    name: 'books',
+    fields: [
+      { name: 'id', dataType: 'Int64', kind: 'scalar', primaryKey: true },
+      { name: 'title', dataType: 'VarChar', kind: 'scalar', primaryKey: false },
+      { name: 'metadata', dataType: 'JSON', kind: 'scalar', primaryKey: false },
+      { name: 'tags', dataType: 'Array', kind: 'scalar', primaryKey: false },
+      { name: 'embedding', dataType: 'FloatVector', kind: 'vector', primaryKey: false },
+    ],
+    indexes: [],
+    rowCount: 2,
+    loadState: 'Loaded',
+    loadProgress: 100,
+  }
+
+  registerMilvusTools({ tools: { register: (tool) => registered.push(tool) } }, {
+    bindingFor: () => ({ id: 'local-dev', name: 'Local development', database: 'default' }),
+    createTransport: () => ({
+      preflightCollection: async () => ({ kind: 'ready', collection }),
+      queryCollection: async (request) => { requests.push(request); return { kind: 'ready', rows: [] } },
+    }),
+  })
+
+  const query = registered.find((tool) => tool.name === 'milvus_query')
+  const execute = (args) => query.execute(args, { signal: AbortSignal.timeout(1000) })
+
+  const accepted = [
+    'json_contains(metadata, \'key\')',
+    'json_contains_all(metadata, [1, 2])',
+    'array_contains(tags, \'fiction\')',
+    'array_length(tags) > 2',
+    'text_match(title, \'milvus\')',
+    'title like \'Milvus%\' and id >= 0',
+    'id is not null',
+    'json_contains(metadata, \'a\') and array_contains(tags, \'b\') or text_match(title, \'c\')',
+  ]
+  for (const filter of accepted) {
+    const result = await execute({ collection: 'books', filter, fields: ['id'], limit: 1 })
+    assert.equal(result.kind, 'ready', `filter should be accepted: ${filter}`)
+  }
+  assert.equal(requests.length, accepted.length)
+
+  const rejected = await execute({ collection: 'books', filter: 'json_contains(not_a_field, \'x\')', fields: ['id'] })
+  assert.deepEqual(rejected, {
+    kind: 'blocked',
+    reason: 'unsupported_field',
+    message: 'The filter references “not_a_field”, which is not an available scalar field for this collection.',
+  })
+})

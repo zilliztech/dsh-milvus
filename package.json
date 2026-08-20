@@ -18,6 +18,7 @@
     "milvus-transport.mjs",
     "milvus-tools.mjs",
     "session-binding.mjs",
+    "sdk-database.mjs",
     "client.js",
     "cordis.patch.yml"
   ],

@@ -1,4 +1,5 @@
 import { HttpClient } from '@zilliz/milvus2-sdk-node'
+import { sdkDatabase } from './sdk-database.mjs'
 
 function normalizeField(field) {
   const name = field.name ?? field.fieldName
@@ -13,14 +14,6 @@ function normalizeField(field) {
 
 function databaseOptions(profile, request = {}) {
   return profile.database ? { ...request, dbName: profile.database } : request
-}
-
-function sdkDatabase(profile) {
-  if (profile.database) return profile.database
-  // HttpClient defaults an omitted database to "default" and then adds it to
-  // every request. Zilliz Serverless has no database concept: an empty value
-  // prevents that false default while keeping the Profile field optional.
-  return profile.kind === 'zilliz-cloud' ? '' : undefined
 }
 
 /**

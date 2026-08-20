@@ -1,15 +1,9 @@
 import { HttpClient } from '@zilliz/milvus2-sdk-node'
+import { sdkDatabase } from './sdk-database.mjs'
 
 const READY = 'Connected to Milvus.'
 const UNAVAILABLE_CREDENTIAL = 'The configured credential is unavailable.'
 const CONNECTION_FAILURE = 'Could not connect to or authenticate with this Milvus profile.'
-
-function sdkDatabase(profile) {
-  if (profile.database) return profile.database
-  // This suppresses HttpClient's implicit "default" database for Zilliz
-  // Serverless, which has no database namespace.
-  return profile.kind === 'zilliz-cloud' ? '' : undefined
-}
 
 /**
  * Perform the smallest real host-side connectivity probe.

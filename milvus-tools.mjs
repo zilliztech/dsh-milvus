@@ -16,9 +16,28 @@ function sourceDescription(source) {
   return `Milvus profile “${source.profileName}”${source.database ? ` (database “${source.database}”)` : ''}`
 }
 
+// Milvus scalar-filter keywords and built-in function names. Identifiers that
+// match either set are never treated as field references, so filters such as
+// `json_contains(meta, 'key')` or `array_length(tags) > 2` validate against
+// their real fields instead of blocking on the function name.
+const FILTER_KEYWORDS = new Set([
+  'and', 'or', 'not', 'in', 'like', 'is', 'true', 'false', 'null',
+])
+const FILTER_FUNCTIONS = new Set([
+  'array_contains', 'array_contains_all', 'array_contains_any',
+  'array_length', 'json_contains', 'json_contains_all', 'json_contains_any',
+  'text_match', 'is_null', 'is_not_null',
+])
+
 function identifiersInFilter(filter) {
   const withoutStrings = filter.replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g, ' ')
   return withoutStrings.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []
+}
+
+function filterFieldReferences(filter) {
+  return identifiersInFilter(filter)
+    .filter((name) => !FILTER_KEYWORDS.has(name.toLowerCase()))
+    .filter((name) => !FILTER_FUNCTIONS.has(name.toLowerCase()))
 }
 
 function validateQueryArgs(args, collection) {
@@ -42,7 +61,7 @@ function validateQueryArgs(args, collection) {
     if (typeof args.filter !== 'string' || !args.filter.trim()) {
       return blocked('invalid_query', 'When supplied, filter must be a non-empty Milvus scalar filter expression.')
     }
-    const filterFields = identifiersInFilter(args.filter).filter((name) => !new Set(['and', 'or', 'not', 'in', 'like', 'true', 'false', 'null']).has(name.toLowerCase()))
+    const filterFields = filterFieldReferences(args.filter)
     const unsupportedFilter = filterFields.find((field) => !scalarFields.has(field))
     if (unsupportedFilter) {
       return blocked('unsupported_field', `The filter references “${unsupportedFilter}”, which is not an available scalar field for this collection.`)
