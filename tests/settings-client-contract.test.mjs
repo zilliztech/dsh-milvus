@@ -4,10 +4,15 @@ import test from 'node:test'
 import vm from 'node:vm'
 
 const clientUrl = new URL('../client.js', import.meta.url)
+const packageUrl = new URL('../package.json', import.meta.url)
 
 test('the browser bundle registers its Milvus settings card in the dsh plugin settings slot', async () => {
   let registration
-  const source = await readFile(clientUrl, 'utf8')
+  const [source, manifestSource] = await Promise.all([
+    readFile(clientUrl, 'utf8'),
+    readFile(packageUrl, 'utf8'),
+  ])
+  const manifest = JSON.parse(manifestSource)
   const context = {
     globalThis: {
       __ModuleLoader__: {
@@ -19,7 +24,7 @@ test('the browser bundle registers its Milvus settings card in the dsh plugin se
   }
   vm.runInNewContext(source, context)
 
-  assert.equal(registration.id, 'dsh-milvus')
+  assert.equal(registration.id, manifest.name)
   const plugin = registration.factory((moduleName) => {
     assert.equal(moduleName, 'react')
     return { createElement: () => null, useSyncExternalStore: () => ({}) }

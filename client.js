@@ -1,6 +1,6 @@
 /* Browser half of Milvus for DSH. React is supplied by dsh's module loader. */
 globalThis.__ModuleLoader__.load({
-  id: 'dsh-milvus',
+  id: '@zilliz/dsh-milvus',
   factory: (require) => {
     const React = require('react')
     const h = React.createElement
