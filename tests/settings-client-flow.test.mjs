@@ -123,4 +123,75 @@ test('the settings card manages profiles while sending a token only to dsh Crede
     }],
     activeProfileId: 'local',
   })
+
+  const embeddingDraft = {
+    id: 'openai-embedding',
+    name: 'OpenAI Embedding',
+    provider: 'openai',
+    model: 'text-embedding-3-small',
+    credentialRef: 'DSH_EMBEDDING_OPENAI_OPENAI_EMBEDDING_API_KEY',
+  }
+  assert.equal(await controller.writeCredential(embeddingDraft, 'embedding-secret'), true)
+  const savedEmbedding = await controller.saveEmbeddingProfile(embeddingDraft)
+  assert.deepEqual(JSON.parse(JSON.stringify(savedEmbedding)), embeddingDraft)
+
+  const savedBinding = await controller.saveRetrievalBinding({
+    milvusProfileId: 'local',
+    collection: 'documents',
+    vectorField: 'embedding',
+    embeddingProfileId: 'openai-embedding',
+  })
+  assert.equal(savedBinding.collection, 'documents')
+  assert.equal(JSON.stringify(profileScope.getSnapshot().value).includes('embedding-secret'), false)
+  assert.deepEqual(JSON.parse(JSON.stringify(profileScope.getSnapshot().value.retrievalBindings)), [{
+    milvusProfileId: 'local',
+    collection: 'documents',
+    vectorField: 'embedding',
+    embeddingProfileId: 'openai-embedding',
+  }])
+
+  const savedPolicy = await controller.saveRetrievalPolicy({
+    milvusProfileId: 'local',
+    collection: 'documents',
+    textField: 'text',
+    sparseField: 'sparse',
+    rerank: { strategy: 'weighted', denseWeight: '0.7', bm25Weight: '0.3' },
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(savedPolicy)), {
+    milvusProfileId: 'local',
+    collection: 'documents',
+    textField: 'text',
+    sparseField: 'sparse',
+    rerank: { strategy: 'weighted', denseWeight: 0.7, bm25Weight: 0.3 },
+  })
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(profileScope.getSnapshot().value.retrievalPolicies)),
+    JSON.parse(JSON.stringify([savedPolicy])),
+  )
+
+  const policyKey = ['local', 'documents'].join('\u0000')
+  profileScope.getSnapshot().value.retrievalPolicies[0].schemaFingerprint = `sha256:${'a'.repeat(64)}`
+  const editedPolicy = await controller.saveRetrievalPolicy({
+    ...savedPolicy,
+    textField: 'body',
+    rerank: { strategy: 'rrf', k: '80' },
+  }, policyKey)
+  assert.deepEqual(JSON.parse(JSON.stringify(editedPolicy)), {
+    milvusProfileId: 'local',
+    collection: 'documents',
+    textField: 'body',
+    sparseField: 'sparse',
+    rerank: { strategy: 'rrf', k: 80 },
+  })
+  assert.equal('schemaFingerprint' in editedPolicy, false)
+
+  await controller.removeRetrievalPolicy(policyKey)
+  assert.deepEqual(JSON.parse(JSON.stringify(profileScope.getSnapshot().value.retrievalPolicies)), [])
+
+  await controller.requestEmbeddingCheck(savedEmbedding)
+  assert.equal(statusScope.getSnapshot().value.embeddingRequest.profileId, 'openai-embedding')
+
+  await controller.removeEmbeddingProfile('openai-embedding')
+  assert.deepEqual(JSON.parse(JSON.stringify(profileScope.getSnapshot().value.embeddingProfiles)), [])
+  assert.deepEqual(JSON.parse(JSON.stringify(profileScope.getSnapshot().value.retrievalBindings)), [])
 })

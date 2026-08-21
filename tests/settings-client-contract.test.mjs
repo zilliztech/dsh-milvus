@@ -80,5 +80,7 @@ test('the browser bundle registers its Milvus settings card in the dsh plugin se
   assert.equal(credentialInvalidation?.event, 'credentials/updated')
   const controller = entry?.options.inject?.().controller
   assert.equal(typeof controller?.writeCredential, 'function')
+  assert.equal(typeof controller?.saveRetrievalPolicy, 'function')
+  assert.match(source, /4\. Hybrid defaults \(optional\)/)
   assert.equal(controller?.getSnapshot(), controller?.getSnapshot())
 })

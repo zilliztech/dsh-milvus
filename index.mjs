@@ -1,6 +1,7 @@
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { attachConnectionStatusMonitor, ConnectionStatusConfig, MILVUS_STATUS_NAMESPACE } from './connection-status.mjs'
+import { attachConnectionStatusMonitor, attachEmbeddingStatusMonitor, ConnectionStatusConfig, MILVUS_STATUS_NAMESPACE } from './connection-status.mjs'
+import { createEmbeddingProvider } from './embedding-provider.mjs'
 import { createMilvusTransport } from './milvus-transport.mjs'
 import { registerMilvusTools } from './milvus-tools.mjs'
 import { ProfileSettingsConfig, validateProfileSettings } from './profile-settings.mjs'
@@ -28,11 +29,15 @@ export function apply(ctx, config) {
 
   ctx.inject(['settings'], (settingsCtx) => {
     const statusScope = settingsCtx.settings.register(MILVUS_STATUS_NAMESPACE, ConnectionStatusConfig, { base: {} })
-    settingsCtx.effect(() => attachConnectionStatusMonitor({
-      statusScope,
-      profileSource,
-      resolveCredential: (ref) => settingsCtx.get('credentials')?.resolve(credentialRef(ref)),
-    }))
+    settingsCtx.effect(() => {
+      const resolveCredential = (ref) => settingsCtx.get('credentials')?.resolve(credentialRef(ref))
+      const disposeMilvus = attachConnectionStatusMonitor({ statusScope, profileSource, resolveCredential })
+      const disposeEmbedding = attachEmbeddingStatusMonitor({ statusScope, profileSource, resolveCredential })
+      return () => {
+        disposeMilvus?.()
+        disposeEmbedding?.()
+      }
+    })
   })
 
   ctx.inject(['credentials', 'tools', 'systemPrompt'], (sctx) => {
@@ -43,8 +48,13 @@ export function apply(ctx, config) {
     sctx.on('agent/session-start', ({ agent }) => {
       bindOrResolveSessionProfile(agent.session, profileSource())
     })
+    const embeddingProvider = createEmbeddingProvider({
+      resolveCredential: (ref) => sctx.credentials.resolve(credentialRef(ref)),
+    })
     registerMilvusTools(sctx, {
       bindingFor: boundProfileFor,
+      settingsFor: profileSource,
+      embeddingProvider,
       createTransport: (profile) => createMilvusTransport({
         profile,
         resolveCredential: (ref) => sctx.credentials.resolve(credentialRef(ref)),
@@ -53,7 +63,7 @@ export function apply(ctx, config) {
     sctx.systemPrompt.section({
       name: 'tool:milvus',
       order: 110,
-      text: 'Use Milvus tools only for the deployment bound to this session. Discover collections first, then describe a collection before querying it. Do not guess a collection name, a field, or a filter meaning: when discovery and schema inspection do not resolve the ambiguity, ask the user. Query tools are read-only and never return vector fields.',
+      text: 'Use Milvus tools only for the deployment bound to this session. Discover collections first, then describe a collection before getting, querying, or searching it. Use milvus_get for exact primary keys, milvus_query for scalar filters, milvus_search for configured dense retrieval, milvus_text_search for schema-proven BM25 full-text retrieval, and milvus_hybrid_search only when both routes are ready. Hybrid rerank defaults to RRF(k=60); pass a rerank parameter only when the user explicitly requests another RRF k or supplies both dense and BM25 weights. Do not guess a collection, field, vector field, BM25 route, partition, filter meaning, or missing weight: ask the user when discovery and schema inspection do not resolve ambiguity. Never silently fall back from hybrid to one route. All operations are read-only and never return vector fields or query vectors.',
     })
   })
 }

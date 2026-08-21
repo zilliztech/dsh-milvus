@@ -4,7 +4,7 @@ import test from 'node:test'
 test('connection status starts idle before a browser requests a check', async () => {
   const { ConnectionStatusConfig } = await import('../connection-status.mjs')
 
-  assert.deepEqual(ConnectionStatusConfig({}), { checks: {} })
+  assert.deepEqual(ConnectionStatusConfig({}), { checks: {}, embeddingChecks: {} })
 })
 
 test('a browser check request is resolved on the Host and publishes only its safe outcome', async () => {
@@ -83,4 +83,35 @@ test('a later browser request prevents an older probe from replacing its status'
   status = { request: { profileId: 'local-dev', requestId: 2 }, checks: {} }
   release()
   await running
+})
+
+test('an embedding check request resolves only the named profile and publishes no credential value', async () => {
+  const { attachEmbeddingStatusMonitor } = await import('../connection-status.mjs')
+  let watcher
+  let status = {
+    embeddingRequest: { profileId: 'openai-small', requestId: 7 },
+    embeddingChecks: {},
+  }
+  const statusScope = {
+    watch(callback) { watcher = callback; return () => {} },
+    get() { return status },
+    async update(patch) { status = { ...status, ...patch } },
+  }
+  const secret = 'embedding-secret'
+  attachEmbeddingStatusMonitor({
+    statusScope,
+    profileSource: () => ({
+      embeddingProfiles: [{ id: 'openai-small', credentialRef: 'DSH_EMBEDDING_OPENAI_API_KEY' }],
+    }),
+    resolveCredential: async () => ({ value: secret }),
+    checkProfile: async (profile, { resolveCredential }) => {
+      assert.equal((await resolveCredential(profile.credentialRef)).value, secret)
+      return { profileId: profile.id, checkedAt: 9, state: 'ready', message: 'Connected to the embedding provider.' }
+    },
+  })
+
+  await watcher(status)
+
+  assert.equal(status.embeddingChecks['openai-small'].state, 'ready')
+  assert.equal(JSON.stringify(status).includes(secret), false)
 })

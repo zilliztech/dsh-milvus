@@ -63,3 +63,97 @@ test('profile settings reject unsafe or ambiguous configuration before persisten
     activeProfileId: 'cloud-over-http',
   }), /https/i)
 })
+
+test('embedding profiles and retrieval bindings contain references but no API key values', async () => {
+  const { validateProfileSettings } = await import('../profile-settings.mjs')
+  const settings = {
+    profiles: [localProfile],
+    activeProfileId: 'local-dev',
+    embeddingProfiles: [{
+      id: 'openai-small',
+      name: 'OpenAI small',
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      credentialRef: 'DSH_EMBEDDING_OPENAI_SMALL_API_KEY',
+    }],
+    retrievalBindings: [{
+      milvusProfileId: 'local-dev',
+      collection: 'documents',
+      vectorField: 'embedding',
+      embeddingProfileId: 'openai-small',
+    }],
+  }
+
+  assert.doesNotThrow(() => validateProfileSettings(settings))
+  assert.equal(JSON.stringify(settings).includes('sk-'), false)
+})
+
+test('embedding settings reject unsupported providers, Gemini models, dangling references, and duplicate bindings', async () => {
+  const { validateProfileSettings } = await import('../profile-settings.mjs')
+  const base = {
+    profiles: [localProfile],
+    activeProfileId: 'local-dev',
+    embeddingProfiles: [{
+      id: 'gemini-main',
+      name: 'Gemini main',
+      provider: 'gemini',
+      model: 'gemini-embedding-001',
+      credentialRef: 'DSH_EMBEDDING_GEMINI_MAIN_API_KEY',
+    }],
+    retrievalBindings: [],
+  }
+
+  assert.throws(() => validateProfileSettings({
+    ...base,
+    embeddingProfiles: [{ ...base.embeddingProfiles[0], provider: 'custom' }],
+  }), /provider is unsupported/i)
+
+  assert.throws(() => validateProfileSettings({
+    ...base,
+    embeddingProfiles: [{ ...base.embeddingProfiles[0], model: 'gemini-pro' }],
+  }), /Gemini model is unsupported/i)
+
+  assert.throws(() => validateProfileSettings({
+    ...base,
+    retrievalBindings: [{
+      milvusProfileId: 'local-dev',
+      collection: 'documents',
+      vectorField: 'embedding',
+      embeddingProfileId: 'missing',
+    }],
+  }), /does not exist/i)
+
+  const binding = {
+    milvusProfileId: 'local-dev',
+    collection: 'documents',
+    vectorField: 'embedding',
+    embeddingProfileId: 'gemini-main',
+  }
+  assert.throws(() => validateProfileSettings({
+    ...base,
+    retrievalBindings: [binding, { ...binding }],
+  }), /must be unique/i)
+})
+
+test('collection retrieval policies validate exact BM25 routes and RRF or named Weighted defaults', async () => {
+  const { validateProfileSettings } = await import('../profile-settings.mjs')
+  const base = { profiles: [localProfile], activeProfileId: 'local-dev' }
+  const policy = {
+    milvusProfileId: 'local-dev',
+    collection: 'documents',
+    textField: 'text',
+    sparseField: 'sparse',
+    schemaFingerprint: `sha256:${'a'.repeat(64)}`,
+    rerank: { strategy: 'weighted', denseWeight: 0.7, bm25Weight: 0.3 },
+  }
+  assert.doesNotThrow(() => validateProfileSettings({ ...base, retrievalPolicies: [policy] }))
+  assert.doesNotThrow(() => validateProfileSettings({
+    ...base, retrievalPolicies: [{ ...policy, rerank: { strategy: 'rrf', k: 60 } }],
+  }))
+  assert.throws(() => validateProfileSettings({
+    ...base, retrievalPolicies: [{ ...policy, rerank: { strategy: 'weighted', denseWeight: 0.7 } }],
+  }), /weights/i)
+  assert.throws(() => validateProfileSettings({
+    ...base, retrievalPolicies: [policy, { ...policy }],
+  }), /must be unique/i)
+})

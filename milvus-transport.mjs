@@ -1,16 +1,6 @@
 import { HttpClient } from '@zilliz/milvus2-sdk-node'
 import { sdkDatabase } from './sdk-database.mjs'
-
-function normalizeField(field) {
-  const name = field.name ?? field.fieldName
-  const dataType = field.type ?? field.dataType
-  return {
-    name,
-    dataType,
-    kind: /vector/i.test(dataType) ? 'vector' : 'scalar',
-    primaryKey: field.primaryKey === true || field.isPrimary === true,
-  }
-}
+import { inspectRetrievalSchema, normalizeField, normalizeFunction, normalizeIndex } from './retrieval-schema.mjs'
 
 function databaseOptions(profile, request = {}) {
   return profile.database ? { ...request, dbName: profile.database } : request
@@ -114,19 +104,24 @@ export function createMilvusTransport({
           }
         }
 
+        const indexes = (description.data.indexes ?? []).map(normalizeIndex)
+        const functions = (description.data.functions ?? []).map(normalizeFunction)
         return {
           kind: 'ready',
           collection: {
             name: description.data.collectionName,
+            ...(description.data.description ? { description: description.data.description } : {}),
             fields,
-            indexes: description.data.indexes.map((index) => ({
-              fieldName: index.fieldName,
-              indexName: index.indexName,
-              metricType: index.metricType,
-            })),
+            indexes,
+            functions,
+            retrievalSchema: inspectRetrievalSchema(fields, indexes, functions),
             rowCount: statistics.data.rowCount,
             loadState: load.data.loadState,
             loadProgress: load.data.loadProgress,
+            ...(Number.isInteger(description.data.shardsNum) ? { shardsNum: description.data.shardsNum } : {}),
+            ...(typeof description.data.enableDynamicField === 'boolean'
+              ? { enableDynamicField: description.data.enableDynamicField }
+              : {}),
           },
         }
       } catch {
@@ -137,7 +132,7 @@ export function createMilvusTransport({
         }
       }
     },
-    async queryCollection({ collectionName, filter, outputFields, limit }) {
+    async queryCollection({ collectionName, filter, outputFields, limit, partitionNames }) {
       const connection = await resolveClient()
       if (connection.blocked) return connection.blocked
       try {
@@ -147,6 +142,7 @@ export function createMilvusTransport({
           ...(filter === undefined ? {} : { filter }),
           outputFields,
           limit,
+          ...(partitionNames === undefined ? {} : { partitionNames }),
         })
         if (response.code !== 0 || !Array.isArray(response.data)) {
           return {
@@ -156,6 +152,143 @@ export function createMilvusTransport({
           }
         }
         return { kind: 'ready', rows: response.data }
+      } catch {
+        return {
+          kind: 'blocked',
+          reason: 'deployment_unreachable',
+          message: 'The selected Milvus deployment could not be reached.',
+        }
+      }
+    },
+    async getCollection({ collectionName, ids, outputFields }) {
+      const connection = await resolveClient()
+      if (connection.blocked) return connection.blocked
+      try {
+        const response = await connection.client.get(databaseOptions(profile, {
+          collectionName,
+          id: ids,
+          outputFields,
+        }))
+        if (response.code !== 0 || !Array.isArray(response.data)) {
+          return {
+            kind: 'blocked',
+            reason: 'get_rejected',
+            message: 'Milvus could not retrieve the requested primary keys from this collection.',
+          }
+        }
+        return { kind: 'ready', rows: response.data }
+      } catch {
+        return {
+          kind: 'blocked',
+          reason: 'deployment_unreachable',
+          message: 'The selected Milvus deployment could not be reached.',
+        }
+      }
+    },
+    async searchCollection({ collectionName, vector, vectorField, filter, outputFields, limit, partitionNames, searchParams }) {
+      const connection = await resolveClient()
+      if (connection.blocked) return connection.blocked
+      try {
+        const response = await connection.client.search(databaseOptions(profile, {
+          collectionName,
+          data: [vector],
+          annsField: vectorField,
+          ...(filter === undefined ? {} : { filter }),
+          outputFields,
+          limit,
+          ...(partitionNames === undefined ? {} : { partitionNames }),
+          ...(searchParams === undefined ? {} : { searchParams }),
+        }))
+        const rows = Array.isArray(response.data)
+          ? response.data
+          : response.data && typeof response.data === 'object'
+            ? [response.data]
+            : undefined
+        if (response.code !== 0 || !rows) {
+          return {
+            kind: 'blocked',
+            reason: 'search_rejected',
+            message: 'Milvus could not complete the dense search for this collection.',
+          }
+        }
+        return { kind: 'ready', rows }
+      } catch {
+        return {
+          kind: 'blocked',
+          reason: 'deployment_unreachable',
+          message: 'The selected Milvus deployment could not be reached.',
+        }
+      }
+    },
+    async textSearchCollection({ collectionName, queryText, sparseField, filter, outputFields, limit, partitionNames, searchParams }) {
+      const connection = await resolveClient()
+      if (connection.blocked) return connection.blocked
+      try {
+        const response = await connection.client.search(databaseOptions(profile, {
+          collectionName,
+          data: [queryText],
+          annsField: sparseField,
+          ...(filter === undefined ? {} : { filter }),
+          outputFields,
+          limit,
+          ...(partitionNames === undefined ? {} : { partitionNames }),
+          ...(searchParams === undefined ? {} : { searchParams }),
+        }))
+        const rows = Array.isArray(response.data)
+          ? response.data
+          : response.data && typeof response.data === 'object'
+            ? [response.data]
+            : undefined
+        if (response.code !== 0 || !rows) {
+          return {
+            kind: 'blocked',
+            reason: 'text_search_rejected',
+            message: 'Milvus could not complete the BM25 text search for this collection.',
+          }
+        }
+        return { kind: 'ready', rows }
+      } catch {
+        return {
+          kind: 'blocked',
+          reason: 'deployment_unreachable',
+          message: 'The selected Milvus deployment could not be reached.',
+        }
+      }
+    },
+    async hybridSearchCollection({ collectionName, vector, denseField, queryText, sparseField, filter, outputFields, limit, partitionNames, rerank }) {
+      const connection = await resolveClient()
+      if (connection.blocked) return connection.blocked
+      try {
+        const route = ({ data, annsField }) => ({
+          data,
+          annsField,
+          limit,
+          ...(filter === undefined ? {} : { filter }),
+        })
+        const response = await connection.client.hybridSearch(databaseOptions(profile, {
+          collectionName,
+          search: [
+            route({ data: [vector], annsField: denseField }),
+            route({ data: [queryText], annsField: sparseField }),
+          ],
+          rerank,
+          ...(partitionNames === undefined ? {} : { partitionNames }),
+          outputFields,
+          limit,
+        }))
+        const rows = Array.isArray(response.data)
+          ? response.data
+          : response.data && typeof response.data === 'object'
+            ? [response.data]
+            : undefined
+        if (response.code !== 0 || !rows) {
+          return {
+            kind: 'blocked',
+            reason: 'hybrid_search_rejected',
+            message: 'Milvus could not complete the dense and BM25 hybrid search for this collection.',
+          }
+        }
+        return { kind: 'ready', rows }
       } catch {
         return {
           kind: 'blocked',

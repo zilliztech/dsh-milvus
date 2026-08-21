@@ -84,7 +84,11 @@ test('the host registers the Milvus settings namespace when dsh provides setting
   assert.deepEqual(registeredTools.map((tool) => tool.name), [
     'milvus_list_collections',
     'milvus_describe_collection',
+    'milvus_get',
     'milvus_query',
+    'milvus_search',
+    'milvus_text_search',
+    'milvus_hybrid_search',
   ])
   assert.match(promptSections[0]?.text ?? '', /ask the user/i)
 

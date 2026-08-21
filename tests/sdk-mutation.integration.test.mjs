@@ -36,8 +36,8 @@ test('the official HTTP SDK supports the v0.1 read path on a disposable collecti
       collectionName,
       dbName: database,
       data: [
-        { id: 1, title: 'fixture one', embedding: [0, 0] },
-        { id: 2, title: 'fixture two', embedding: [1, 1] },
+        { id: 1, title: 'fixture one', embedding: [1, 0] },
+        { id: 2, title: 'fixture two', embedding: [0, 1] },
       ],
     })
     assert.equal(inserted.code, 0, inserted.message)
@@ -75,7 +75,28 @@ test('the official HTTP SDK supports the v0.1 read path on a disposable collecti
     assert.equal(preflight.kind, 'ready', preflight.message)
     assert.equal(preflight.collection.name, collectionName)
     assert.ok(preflight.collection.fields.some((field) => field.name === 'title' && field.kind === 'scalar'))
-    assert.ok(preflight.collection.fields.some((field) => field.name === 'embedding' && field.kind === 'vector'))
+    assert.ok(preflight.collection.fields.some((field) => field.name === 'embedding' && field.kind === 'vector' && field.dimension === 2))
+
+    const controlledGet = await transport.getCollection({
+      collectionName,
+      ids: [1],
+      outputFields: ['id', 'title'],
+    })
+    assert.equal(controlledGet.kind, 'ready')
+    assert.equal(String(controlledGet.rows[0].id), '1')
+    assert.equal(controlledGet.rows[0].title, 'fixture one')
+
+    const controlledSearch = await transport.searchCollection({
+      collectionName,
+      vector: [1, 0],
+      vectorField: 'embedding',
+      outputFields: ['id', 'title'],
+      limit: 1,
+    })
+    assert.equal(controlledSearch.kind, 'ready')
+    assert.equal(controlledSearch.rows.length, 1)
+    assert.equal(String(controlledSearch.rows[0].id), '1')
+    assert.equal(controlledSearch.rows[0].embedding, undefined)
 
     const registeredTools = []
     registerMilvusTools({ tools: { register: (tool) => registeredTools.push(tool) } }, {
@@ -87,6 +108,37 @@ test('the official HTTP SDK supports the v0.1 read path on a disposable collecti
         database,
       }),
       createTransport: () => transport,
+      settingsFor: () => ({
+        embeddingProfiles: [{
+          id: 'fixture-embedding',
+          name: 'Fixture embedding',
+          provider: 'openai',
+          model: 'text-embedding-3-small',
+          credentialRef: 'FIXTURE_ONLY',
+        }],
+        retrievalBindings: [{
+          milvusProfileId: 'integration-local',
+          collection: collectionName,
+          vectorField: 'embedding',
+          embeddingProfileId: 'fixture-embedding',
+        }],
+      }),
+      embeddingProvider: {
+        embedQuery: async ({ text, dimensions }) => {
+          assert.equal(text, 'fixture one')
+          assert.equal(dimensions, 2)
+          return {
+            kind: 'ready',
+            vector: [1, 0],
+            provenance: {
+              provider: 'openai',
+              model: 'text-embedding-3-small',
+              dimension: 2,
+              latencyMs: 0,
+            },
+          }
+        },
+      },
     })
     const queryTool = registeredTools.find((tool) => tool.name === 'milvus_query')
     const controlledQuery = await queryTool.execute({
@@ -99,6 +151,28 @@ test('the official HTTP SDK supports the v0.1 read path on a disposable collecti
     assert.equal(controlledQuery.rows.length, 1)
     assert.equal(controlledQuery.rows[0].embedding, undefined)
     assert.equal(typeof controlledQuery.rows[0].title, 'string')
+
+    const getTool = registeredTools.find((tool) => tool.name === 'milvus_get')
+    const toolGet = await getTool.execute({
+      collection: collectionName,
+      ids: [2],
+      fields: ['id', 'title'],
+    }, { signal: AbortSignal.timeout(30_000) })
+    assert.equal(toolGet.kind, 'ready')
+    assert.equal(String(toolGet.rows[0].id), '2')
+    assert.equal(toolGet.rows[0].title, 'fixture two')
+
+    const searchTool = registeredTools.find((tool) => tool.name === 'milvus_search')
+    const toolSearch = await searchTool.execute({
+      collection: collectionName,
+      query: 'fixture one',
+      fields: ['id', 'title'],
+      limit: 1,
+    }, { signal: AbortSignal.timeout(30_000) })
+    assert.equal(toolSearch.kind, 'ready')
+    assert.equal(String(toolSearch.rows[0].id), '1')
+    assert.equal(toolSearch.rows[0].embedding, undefined)
+    assert.equal(toolSearch.retrieval.vectorField, 'embedding')
 
     const description = await client.describeCollection({ collectionName, dbName: database })
     assert.equal(description.code, 0, description.message)

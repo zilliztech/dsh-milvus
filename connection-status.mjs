@@ -1,5 +1,6 @@
 import z from '@deepseek-ai/schemastery'
 import { checkMilvusProfile } from './connection-check.mjs'
+import { checkEmbeddingProfile } from './embedding-check.mjs'
 
 export const MILVUS_STATUS_NAMESPACE = 'dsh-milvus-status'
 
@@ -16,6 +17,11 @@ export const ConnectionStatusConfig = z.object({
     requestId: z.number().required(),
   }).default(null),
   checks: z.dict(CheckResultConfig).default({}),
+  embeddingRequest: z.object({
+    profileId: z.string().required(),
+    requestId: z.number().required(),
+  }).default(null),
+  embeddingChecks: z.dict(CheckResultConfig).default({}),
 })
 
 const missingProfile = (profileId, checkedAt) => ({
@@ -56,6 +62,37 @@ export function attachConnectionStatusMonitor({
     if (current.request?.profileId !== request.profileId || current.request?.requestId !== request.requestId) return
     await statusScope.update({
       checks: { ...(current.checks ?? {}), [request.profileId]: result },
+    })
+  })
+}
+
+/** Process browser embedding-profile checks without exposing API keys. */
+export function attachEmbeddingStatusMonitor({
+  statusScope,
+  profileSource,
+  resolveCredential,
+  checkProfile = checkEmbeddingProfile,
+  now = Date.now,
+}) {
+  let lastRequestKey = ''
+
+  return statusScope.watch(async (status) => {
+    const request = status.embeddingRequest
+    if (!request) return
+    const requestKey = `${request.profileId}:${request.requestId}`
+    if (requestKey === lastRequestKey) return
+    lastRequestKey = requestKey
+
+    const profile = profileSource().embeddingProfiles?.find((item) => item.id === request.profileId)
+    const result = profile
+      ? await checkProfile(profile, { resolveCredential, now })
+      : missingProfile(request.profileId, now())
+
+    const current = statusScope.get()
+    if (current.embeddingRequest?.profileId !== request.profileId
+      || current.embeddingRequest?.requestId !== request.requestId) return
+    await statusScope.update({
+      embeddingChecks: { ...(current.embeddingChecks ?? {}), [request.profileId]: result },
     })
   })
 }
