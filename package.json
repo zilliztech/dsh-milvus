@@ -1,6 +1,6 @@
 {
   "name": "@zilliz/dsh-milvus",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Milvus for DSH — a read-only dsh Web plugin for Agent and RAG developers",
   "type": "module",
   "main": "./index.mjs",
