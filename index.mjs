@@ -1,6 +1,6 @@
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { attachConnectionStatusMonitor, attachEmbeddingStatusMonitor, ConnectionStatusConfig, MILVUS_STATUS_NAMESPACE } from './connection-status.mjs'
+import { attachCollectionStatusMonitor, attachConnectionStatusMonitor, attachEmbeddingStatusMonitor, ConnectionStatusConfig, MILVUS_STATUS_NAMESPACE } from './connection-status.mjs'
 import { createEmbeddingProvider } from './embedding-provider.mjs'
 import { createMilvusTransport } from './milvus-transport.mjs'
 import { registerMilvusTools } from './milvus-tools.mjs'
@@ -33,9 +33,15 @@ export function apply(ctx, config) {
       const resolveCredential = (ref) => settingsCtx.get('credentials')?.resolve(credentialRef(ref))
       const disposeMilvus = attachConnectionStatusMonitor({ statusScope, profileSource, resolveCredential })
       const disposeEmbedding = attachEmbeddingStatusMonitor({ statusScope, profileSource, resolveCredential })
+      const disposeCollections = attachCollectionStatusMonitor({
+        statusScope,
+        profileSource,
+        createTransport: (profile) => createMilvusTransport({ profile, resolveCredential }),
+      })
       return () => {
         disposeMilvus?.()
         disposeEmbedding?.()
+        disposeCollections?.()
       }
     })
   })

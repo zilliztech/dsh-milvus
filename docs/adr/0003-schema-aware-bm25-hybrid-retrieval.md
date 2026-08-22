@@ -11,10 +11,10 @@ than a standalone tool. An explicit valid parameter overrides a saved
 collection policy; otherwise the plugin uses RRF with `k=60`. The first release
 also supports named dense/BM25 Weighted values.
 
-The DSH Web settings card exposes the optional collection policy. Most
-collections need no saved policy: a unique valid BM25 route is discovered from
-schema facts, and the plugin default applies. A policy is intended for an exact
-route choice or a collection-specific rerank default.
+The DSH Web settings card exposes the optional collection policy only in its
+Advanced settings. Most collections need no saved policy: a unique valid BM25
+route is discovered from schema facts, and the plugin default applies. A policy
+is intended for an exact route choice or a collection-specific rerank default.
 
 Schema facts may establish structural capability but not semantic intent. A
 unique valid BM25 route can be selected automatically; multiple routes require

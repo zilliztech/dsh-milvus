@@ -38,44 +38,61 @@ browser page.
 
 ## Set up the plugin
 
-Open **Settings → Plugins → Milvus for DSH**. Connect Milvus first. Add the
-embedding steps only when you need dense or hybrid retrieval.
+Open **Settings → Plugins → Milvus for DSH**. The setup follows the same order
+as using Milvus: connect a deployment, choose a collection, then enable only
+the search capabilities you need.
 
-### 1. Connect Milvus
+### Connect Milvus
 
-For Local Milvus:
+Choose **Local Milvus Standalone** or **Zilliz Cloud**, then enter the endpoint
+and optional database. Local Milvus normally uses
+`http://127.0.0.1:19530` and database `default`. Zilliz Cloud requires its HTTPS
+endpoint and token. For an authenticated local deployment, select **Add
+optional authentication** and enter its token.
 
-1. Select **Local Milvus Standalone**.
-2. Enter an endpoint such as `http://127.0.0.1:19530`.
-3. Enter the database name, normally `default`.
-4. If authentication is enabled, select **Add optional Milvus authentication**
-   and enter the token.
-5. Create the profile and select **Test Milvus connection**.
-
-For Zilliz Cloud:
-
-1. Select **Zilliz Cloud**.
-2. Enter the cluster's HTTPS endpoint and token.
-3. Enter a database only when the deployment uses one.
-4. Create the profile and select **Test Milvus connection**.
+After saving, use **Test connection**. The card collapses the form into a
+connection summary so the deployment details no longer compete with collection
+setup.
 
 The endpoint is resolved from the machine running DSH Web. When Milvus runs in
 another container or on another host, use an address reachable from the DSH
 Web host—not a loopback address inside the Milvus container.
 
-The active Milvus profile is bound when a new chat starts. Changing the active
-profile affects new chats; it does not silently switch an existing chat to a
-different deployment.
+The active connection is bound when a new chat starts. Changing it affects new
+chats; it does not silently switch an existing chat to a different deployment.
 
-### 2. Add an embedding provider
+### Choose a collection
+
+The Collection selector is populated from the connected Milvus database. Pick
+one collection and DSH inspects its fields, indexes, and Functions on the Host.
+You do not type collection or schema field names in the normal setup path.
+
+The card then reports four capabilities:
+
+- **Scalar query** is ready after a successful schema inspection.
+- **BM25 search** is ready when the collection has one valid Milvus BM25
+  Function route. It does not need an external API key.
+- **Semantic search** is ready after its embedding provider and discovered
+  `FloatVector` field are mapped.
+- **Hybrid search** becomes ready automatically when both BM25 and semantic
+  search are ready.
+
+### Enable semantic search when needed
 
 This step is required only for natural-language dense and hybrid search. BM25
 text search does not use an external embedding provider.
 
-1. Create an embedding profile.
-2. Choose **OpenAI** or **Google Gemini**.
-3. Choose a model and enter its API key.
-4. Create the profile and select **Test embedding provider**.
+1. Select **Enable** on the Semantic search capability.
+2. Choose **OpenAI** or **Google Gemini** and a model.
+3. Enter the provider API key.
+4. Choose one `FloatVector` field discovered from the selected collection.
+5. Select **Enable semantic search**.
+
+If a provider is already configured, reuse it instead of entering the key
+again. The field must contain document vectors created with that exact model
+and vector space. A matching dimension by itself does not prove compatibility;
+for example, `gemini-embedding-001` and `gemini-embedding-2` are not
+interchangeable.
 
 Supported models in the settings UI:
 
@@ -88,42 +105,23 @@ Milvus tokens and embedding API keys are saved through write-only DSH
 Credentials. Their values are never stored in plugin settings, returned to the
 browser after saving, or added to chat history.
 
-### 3. Bind a collection vector field
-
-Create a dense retrieval binding with:
-
-- the Milvus profile;
-- the exact collection name;
-- the exact `FloatVector` field name; and
-- the embedding profile used to create that field's stored vectors.
-
-The model and vector space must match the embeddings already stored in Milvus.
-Matching the vector dimension alone is not enough. In particular,
-`gemini-embedding-001` and `gemini-embedding-2` use incompatible embedding
-spaces, so they must not be interchanged for queries and documents.
-
 The chat tool accepts natural-language query text; it never asks the user or
 agent to supply a list of floats. DSH generates the query vector on the host,
 checks its dimension against the collection schema, and sends it directly to
 Milvus.
 
-### 4. Set hybrid defaults (optional)
+### Use Advanced settings only when necessary
 
-You do not need a collection policy when the collection has exactly one valid
-BM25 route and RRF with `k=60` is a suitable default. In that common case, the
-plugin discovers the route from the collection schema.
+**Advanced settings** is collapsed by default. Open it only to remove a vector
+mapping, select among multiple schema-proven BM25 routes, or change hybrid
+ranking.
 
-Create a collection policy in the settings card only when you need to:
-
-- choose the exact BM25 text and `SparseFloatVector` fields in a collection
-  that has multiple valid BM25 routes; or
-- change the collection's default hybrid rerank to another RRF `k` or named
-  dense/BM25 weights.
-
-Select the Milvus profile, enter the exact collection, BM25 text field, and
-sparse field names, then choose the rerank defaults. A rerank parameter supplied
-in an individual chat request takes precedence over the saved collection
-policy.
+No collection policy is needed when the collection has one valid BM25 route
+and the default RRF with `k=60` is suitable. When several routes exist, select
+one of the routes discovered from the schema; the UI does not accept arbitrary
+text or sparse field names. You can also choose another RRF `k` or configure
+named semantic/BM25 weights. A rerank parameter supplied in an individual chat
+request takes precedence over the saved default.
 
 ## Collection requirements for search
 

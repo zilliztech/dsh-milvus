@@ -26,6 +26,7 @@
     "connection-status.mjs",
     "milvus-transport.mjs",
     "retrieval-schema.mjs",
+    "retrieval-capabilities.mjs",
     "milvus-tools.mjs",
     "session-binding.mjs",
     "sdk-database.mjs",

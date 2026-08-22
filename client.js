@@ -29,6 +29,9 @@ globalThis.__ModuleLoader__.load({
       openai: { id: 'openai-embedding', name: 'OpenAI Embedding', model: 'text-embedding-3-small' },
       gemini: { id: 'gemini-embedding', name: 'Gemini Embedding', model: 'gemini-embedding-001' },
     }
+    const embeddingModelsFor = (provider) => provider === 'gemini'
+      ? ['gemini-embedding-001', 'gemini-embedding-2']
+      : ['text-embedding-3-small', 'text-embedding-3-large']
     const nextEmbeddingIdentity = (provider, profiles) => {
       const base = embeddingDefaults[provider]
       const ids = new Set(profiles.map((profile) => profile.id))
@@ -53,36 +56,8 @@ globalThis.__ModuleLoader__.load({
         credentialRef: embeddingCredentialRefFor(provider, identity.id),
       }
     }
-    const embeddingDraftOf = (profile, profiles = []) => profile
-      ? { ...emptyEmbeddingDraft(profile.provider, profiles), ...profile }
-      : emptyEmbeddingDraft('openai', profiles)
     const bindingKey = (binding) => [binding.milvusProfileId, binding.collection, binding.vectorField].join('\u0000')
-    const emptyBindingDraft = (state) => ({
-      milvusProfileId: state.activeProfileId || state.profiles[0]?.id || '',
-      collection: '',
-      vectorField: '',
-      embeddingProfileId: state.embeddingProfiles[0]?.id || '',
-    })
     const policyKey = (policy) => [policy.milvusProfileId, policy.collection].join('\u0000')
-    const emptyPolicyDraft = (state) => ({
-      milvusProfileId: state.activeProfileId || state.profiles[0]?.id || '',
-      collection: '',
-      textField: '',
-      sparseField: '',
-      rerank: { strategy: 'rrf', k: 60 },
-    })
-    const policyDraftOf = (policy, state) => policy
-      ? {
-          milvusProfileId: policy.milvusProfileId,
-          collection: policy.collection,
-          textField: policy.textField,
-          sparseField: policy.sparseField,
-          rerank: policy.rerank?.strategy === 'weighted'
-            ? { strategy: 'weighted', denseWeight: policy.rerank.denseWeight, bm25Weight: policy.rerank.bm25Weight }
-            : { strategy: 'rrf', k: policy.rerank?.k ?? 60 },
-          ...(policy.schemaFingerprint ? { schemaFingerprint: policy.schemaFingerprint } : {}),
-        }
-      : emptyPolicyDraft(state)
     const emptyDraft = (kind = 'local', profiles = []) => {
       const identity = nextIdentity(kind, profiles)
       return {
@@ -107,6 +82,7 @@ globalThis.__ModuleLoader__.load({
         this.credentials = {}
         this.pending = false
         this.error = ''
+        this.requestId = Date.now()
         this.snapshot = this.buildSnapshot()
         scope.subscribe(() => {
           this.readCredentials()
@@ -128,6 +104,7 @@ globalThis.__ModuleLoader__.load({
           credentials: this.credentials,
           checks: status.checks ?? {},
           embeddingChecks: status.embeddingChecks ?? {},
+          collectionChecks: status.collectionChecks ?? {},
           pending: this.pending,
           error: this.error,
         }
@@ -143,6 +120,11 @@ globalThis.__ModuleLoader__.load({
       emit() {
         this.snapshot = this.buildSnapshot()
         for (const listener of this.listeners) listener()
+      }
+
+      nextRequestId() {
+        this.requestId += 1
+        return this.requestId
       }
 
       async readCredentials(additionalRefs = []) {
@@ -167,7 +149,7 @@ globalThis.__ModuleLoader__.load({
           }]))
           this.emit()
         } catch {
-          // A status read must not clear a profile or claim its secret is absent.
+          // A status read must not clear configuration or expose provider errors.
         }
       }
 
@@ -178,7 +160,7 @@ globalThis.__ModuleLoader__.load({
         try {
           return await work()
         } catch (error) {
-          this.error = error instanceof Error ? error.message : 'Could not update the Milvus profile.'
+          this.error = error instanceof Error ? error.message : 'Could not update Milvus settings.'
           this.emit()
           return undefined
         } finally {
@@ -191,7 +173,7 @@ globalThis.__ModuleLoader__.load({
         const current = this.getSnapshot()
         const existing = current.profiles.find((item) => item.id === originalId)
         const identity = existing
-          ? { id: String(draft.id).trim(), name: String(draft.name).trim() }
+          ? { id: existing.id, name: existing.name }
           : nextIdentity(draft.kind, current.profiles)
         const profile = {
           ...identity,
@@ -207,9 +189,6 @@ globalThis.__ModuleLoader__.load({
             : [...current.profiles, profile]
           await this.scope.set('profiles', profiles)
           if (!current.activeProfileId) await this.scope.set('activeProfileId', profile.id)
-          // Return the exact persisted shape. The settings subscription reaches
-          // React asynchronously, so callers must not reconstruct a new
-          // profile from their pre-save snapshot.
           return profile
         })
       }
@@ -225,13 +204,8 @@ globalThis.__ModuleLoader__.load({
           const retrievalBindings = current.retrievalBindings.filter((binding) => binding.milvusProfileId !== id)
           const retrievalPolicies = current.retrievalPolicies.filter((policy) => policy.milvusProfileId !== id)
           const nextActive = current.activeProfileId === id ? (profiles[0]?.id ?? '') : current.activeProfileId
-          // Preserve cross-field validity throughout the two separate writes.
-          if (retrievalBindings.length !== current.retrievalBindings.length) {
-            await this.scope.set('retrievalBindings', retrievalBindings)
-          }
-          if (retrievalPolicies.length !== current.retrievalPolicies.length) {
-            await this.scope.set('retrievalPolicies', retrievalPolicies)
-          }
+          if (retrievalBindings.length !== current.retrievalBindings.length) await this.scope.set('retrievalBindings', retrievalBindings)
+          if (retrievalPolicies.length !== current.retrievalPolicies.length) await this.scope.set('retrievalPolicies', retrievalPolicies)
           if (nextActive !== current.activeProfileId) await this.scope.set('activeProfileId', nextActive)
           await this.scope.set('profiles', profiles)
         })
@@ -241,7 +215,7 @@ globalThis.__ModuleLoader__.load({
         const current = this.getSnapshot()
         const existing = current.embeddingProfiles.find((item) => item.id === originalId)
         const identity = existing
-          ? { id: String(draft.id).trim(), name: String(draft.name).trim() }
+          ? { id: existing.id, name: existing.name }
           : nextEmbeddingIdentity(draft.provider, current.embeddingProfiles)
         const profile = {
           ...identity,
@@ -262,9 +236,7 @@ globalThis.__ModuleLoader__.load({
         return this.run(async () => {
           const current = this.getSnapshot()
           const retrievalBindings = current.retrievalBindings.filter((binding) => binding.embeddingProfileId !== id)
-          if (retrievalBindings.length !== current.retrievalBindings.length) {
-            await this.scope.set('retrievalBindings', retrievalBindings)
-          }
+          if (retrievalBindings.length !== current.retrievalBindings.length) await this.scope.set('retrievalBindings', retrievalBindings)
           await this.scope.set('embeddingProfiles', current.embeddingProfiles.filter((profile) => profile.id !== id))
         })
       }
@@ -317,7 +289,11 @@ globalThis.__ModuleLoader__.load({
             : { strategy: 'rrf', k: Number(draft.rerank.k) }
           const policy = {
             ...route,
-            ...(routeUnchanged && existing.schemaFingerprint ? { schemaFingerprint: existing.schemaFingerprint } : {}),
+            ...(draft.schemaFingerprint
+              ? { schemaFingerprint: draft.schemaFingerprint }
+              : routeUnchanged && existing.schemaFingerprint
+                ? { schemaFingerprint: existing.schemaFingerprint }
+                : {}),
             rerank,
           }
           const retrievalPolicies = originalKey
@@ -344,17 +320,56 @@ globalThis.__ModuleLoader__.load({
         })
       }
 
+      configureSemantic({ milvusProfileId, collection, vectorField, embeddingProfileId, provider, model, apiKey }) {
+        return this.run(async () => {
+          const current = this.getSnapshot()
+          let embeddingProfile = current.embeddingProfiles.find((item) => item.id === embeddingProfileId)
+          if (!embeddingProfile) {
+            const identity = nextEmbeddingIdentity(provider, current.embeddingProfiles)
+            embeddingProfile = {
+              ...identity,
+              provider,
+              model,
+              credentialRef: embeddingCredentialRefFor(provider, identity.id),
+            }
+          }
+          const credential = current.credentials[embeddingProfile.credentialRef]
+          if (!credential?.configured && !apiKey) throw new Error('Enter an API key to enable semantic search.')
+          if (apiKey) await this.api.credentials.set({ ref: embeddingProfile.credentialRef, value: apiKey })
+
+          if (!current.embeddingProfiles.some((item) => item.id === embeddingProfile.id)) {
+            await this.scope.set('embeddingProfiles', [...current.embeddingProfiles, embeddingProfile])
+          }
+          const binding = { milvusProfileId, collection, vectorField, embeddingProfileId: embeddingProfile.id }
+          const retrievalBindings = [
+            ...current.retrievalBindings.filter((item) => item.milvusProfileId !== milvusProfileId || item.collection !== collection),
+            binding,
+          ]
+          await this.scope.set('retrievalBindings', retrievalBindings)
+          await this.readCredentials([embeddingProfile.credentialRef])
+          return { embeddingProfile, binding }
+        })
+      }
+
       requestCheck(profile) {
         return this.run(() => this.statusScope.set('request', {
           profileId: profile.id,
-          requestId: Date.now(),
+          requestId: this.nextRequestId(),
         }))
       }
 
       requestEmbeddingCheck(profile) {
         return this.run(() => this.statusScope.set('embeddingRequest', {
           profileId: profile.id,
-          requestId: Date.now(),
+          requestId: this.nextRequestId(),
+        }))
+      }
+
+      requestCollectionDiscovery(profile, collection) {
+        return this.run(() => this.statusScope.set('collectionRequest', {
+          profileId: profile.id,
+          ...(collection ? { collection } : {}),
+          requestId: this.nextRequestId(),
         }))
       }
 
@@ -366,226 +381,374 @@ globalThis.__ModuleLoader__.load({
 
     function Field({ label, hint, children }) {
       return h('label', { className: 'dsh-milvus-field' }, [
-        h('span', { className: 'dsh-milvus-label', key: 'label' }, label), children,
+        h('span', { className: 'dsh-milvus-label', key: 'label' }, label),
+        children,
         hint ? h('span', { className: 'dsh-milvus-hint', key: 'hint' }, hint) : null,
+      ])
+    }
+
+    function StatusPill({ state, children }) {
+      return h('span', { className: 'dsh-milvus-pill', 'data-state': state }, children)
+    }
+
+    function CapabilityRow({ state, title, detail, action }) {
+      const symbol = state === 'ready' ? '✓' : state === 'ambiguous' ? '!' : '○'
+      return h('div', { className: 'dsh-milvus-capability', 'data-state': state }, [
+        h('span', { className: 'dsh-milvus-capability-icon', key: 'icon' }, symbol),
+        h('div', { className: 'dsh-milvus-capability-copy', key: 'copy' }, [
+          h('strong', { key: 'title' }, title),
+          h('span', { key: 'detail' }, detail),
+        ]),
+        action ? h('div', { className: 'dsh-milvus-capability-action', key: 'action' }, action) : null,
       ])
     }
 
     function MilvusSettingsCard({ controller }) {
       const state = React.useSyncExternalStore(controller.subscribe, controller.getSnapshot)
-      const [selectedId, setSelectedId] = React.useState(state.activeProfileId)
-      const [draft, setDraft] = React.useState(() => draftOf(state.profiles.find((profile) => profile.id === state.activeProfileId), state.profiles))
-      const [token, setToken] = React.useState('')
-      const [selectedEmbeddingId, setSelectedEmbeddingId] = React.useState('')
-      const [embeddingDraft, setEmbeddingDraft] = React.useState(() => emptyEmbeddingDraft('openai', state.embeddingProfiles))
-      const [apiKey, setApiKey] = React.useState('')
-      const [selectedBindingKey, setSelectedBindingKey] = React.useState('')
-      const [bindingDraft, setBindingDraft] = React.useState(() => emptyBindingDraft(state))
-      const [selectedPolicyKey, setSelectedPolicyKey] = React.useState('')
-      const [policyDraft, setPolicyDraft] = React.useState(() => emptyPolicyDraft(state))
-
+      const initialProfileId = state.activeProfileId || state.profiles[0]?.id || ''
+      const [selectedId, setSelectedId] = React.useState(initialProfileId)
       const selected = state.profiles.find((profile) => profile.id === selectedId)
-      const selectedEmbedding = state.embeddingProfiles.find((profile) => profile.id === selectedEmbeddingId)
-      const selectedBinding = state.retrievalBindings.find((binding) => bindingKey(binding) === selectedBindingKey)
-      const selectedPolicy = state.retrievalPolicies.find((policy) => policyKey(policy) === selectedPolicyKey)
-      const update = (field, value) => setDraft((previous) => ({ ...previous, [field]: value }))
-      const updateKind = (kind) => setDraft((previous) => selected ? { ...previous, kind } : emptyDraft(kind, state.profiles))
-      const choose = (id, profile) => {
+      const [editingConnection, setEditingConnection] = React.useState(!selected)
+      const [draft, setDraft] = React.useState(() => draftOf(selected, state.profiles))
+      const [token, setToken] = React.useState('')
+      const [selectedCollection, setSelectedCollection] = React.useState('')
+      const [showSemantic, setShowSemantic] = React.useState(false)
+      const [embeddingChoice, setEmbeddingChoice] = React.useState('new:openai')
+      const [embeddingModel, setEmbeddingModel] = React.useState(embeddingDefaults.openai.model)
+      const [apiKey, setApiKey] = React.useState('')
+      const [vectorField, setVectorField] = React.useState('')
+      const [routeKey, setRouteKey] = React.useState('')
+      const [rerank, setRerank] = React.useState({ strategy: 'rrf', k: 60 })
+
+      const connectionCheck = selected ? state.checks[selected.id] : undefined
+      const collectionCheck = selected ? state.collectionChecks[selected.id] : undefined
+      const inspection = collectionCheck?.requestedCollection === selectedCollection
+        && collectionCheck.collection?.name === selectedCollection
+        ? collectionCheck.collection
+        : undefined
+      const vectorFields = inspection?.fields.filter((field) => /^floatvector$/i.test(field.dataType)) ?? []
+      const bm25Routes = inspection?.retrievalSchema.bm25Routes ?? []
+      const bindings = selected && selectedCollection
+        ? state.retrievalBindings.filter((binding) => binding.milvusProfileId === selected.id && binding.collection === selectedCollection)
+        : []
+      const binding = bindings.length === 1 ? bindings[0] : undefined
+      const boundEmbedding = binding
+        ? state.embeddingProfiles.find((profile) => profile.id === binding.embeddingProfileId)
+        : undefined
+      const boundCredential = boundEmbedding ? state.credentials[boundEmbedding.credentialRef] : undefined
+      const denseStructurallyReady = inspection?.capabilities.dense.state === 'ready'
+      const denseReady = denseStructurallyReady && boundCredential?.configured === true
+      const bm25Ready = inspection?.capabilities.bm25.state === 'ready'
+      const hybridReady = denseReady && bm25Ready
+      const currentPolicy = selected && selectedCollection
+        ? state.retrievalPolicies.find((policy) => policy.milvusProfileId === selected.id && policy.collection === selectedCollection)
+        : undefined
+      const semanticProfile = embeddingChoice.startsWith('new:')
+        ? undefined
+        : state.embeddingProfiles.find((profile) => profile.id === embeddingChoice)
+      const semanticProvider = semanticProfile?.provider ?? embeddingChoice.slice(4)
+      const semanticModels = embeddingModelsFor(semanticProvider)
+      const semanticCredential = semanticProfile ? state.credentials[semanticProfile.credentialRef] : undefined
+      const semanticKeyRequired = semanticProfile ? semanticCredential?.configured !== true : true
+      const chosenRoute = bm25Routes.find((route) => `${route.inputField}\u0000${route.outputField}` === routeKey)
+      const rerankValid = rerank.strategy === 'rrf'
+        ? Number.isFinite(Number(rerank.k)) && Number(rerank.k) > 0 && Number(rerank.k) < 16_384
+        : [rerank.denseWeight, rerank.bm25Weight].every((weight) => Number.isFinite(Number(weight)) && Number(weight) >= 0 && Number(weight) <= 1)
+          && !(Number(rerank.denseWeight) === 0 && Number(rerank.bm25Weight) === 0)
+
+      React.useEffect(() => {
+        setSelectedCollection('')
+        setShowSemantic(false)
+        if (selected && !editingConnection) controller.requestCollectionDiscovery(selected)
+      }, [selectedId, editingConnection])
+
+      React.useEffect(() => {
+        if (!inspection) return
+        const policyRoute = currentPolicy
+          ? bm25Routes.find((route) => route.inputField === currentPolicy.textField && route.outputField === currentPolicy.sparseField)
+          : undefined
+        const route = policyRoute ?? bm25Routes[0]
+        setRouteKey(route ? `${route.inputField}\u0000${route.outputField}` : '')
+        setRerank(currentPolicy?.rerank?.strategy === 'weighted'
+          ? {
+              strategy: 'weighted',
+              denseWeight: currentPolicy.rerank.denseWeight,
+              bm25Weight: currentPolicy.rerank.bm25Weight,
+            }
+          : { strategy: 'rrf', k: currentPolicy?.rerank?.k ?? 60 })
+      }, [inspection?.name, inspection?.retrievalSchema.schemaFingerprint, currentPolicy])
+
+      const updateDraft = (field, value) => setDraft((previous) => ({ ...previous, [field]: value }))
+      const chooseConnection = (id) => {
+        const profile = state.profiles.find((item) => item.id === id)
         setSelectedId(id)
-        setDraft(draftOf(profile ?? state.profiles.find((item) => item.id === id), state.profiles))
+        setDraft(draftOf(profile, state.profiles))
         setToken('')
       }
-      const chooseEmbedding = (id, profile) => {
-        setSelectedEmbeddingId(id)
-        setEmbeddingDraft(embeddingDraftOf(profile ?? state.embeddingProfiles.find((item) => item.id === id), state.embeddingProfiles))
+      const changeKind = (kind) => setDraft(emptyDraft(kind, state.profiles))
+      const openSemantic = () => {
+        if (boundEmbedding) {
+          setEmbeddingChoice(boundEmbedding.id)
+          setEmbeddingModel(boundEmbedding.model)
+          setVectorField(binding.vectorField)
+        } else {
+          setEmbeddingChoice('new:openai')
+          setEmbeddingModel(embeddingDefaults.openai.model)
+          setVectorField(vectorFields[0]?.name ?? '')
+        }
+        setApiKey('')
+        setShowSemantic(true)
+      }
+      const chooseEmbedding = (value) => {
+        setEmbeddingChoice(value)
+        const profile = state.embeddingProfiles.find((item) => item.id === value)
+        const provider = profile?.provider ?? value.slice(4)
+        setEmbeddingModel(profile?.model ?? embeddingDefaults[provider].model)
         setApiKey('')
       }
-      const chooseEmbeddingProvider = (provider) => setEmbeddingDraft(emptyEmbeddingDraft(provider, state.embeddingProfiles))
-      const chooseBinding = (key, binding) => {
-        setSelectedBindingKey(key)
-        setBindingDraft(binding ?? state.retrievalBindings.find((item) => bindingKey(item) === key) ?? emptyBindingDraft(state))
-      }
-      const updateBinding = (field, value) => setBindingDraft((previous) => ({ ...previous, [field]: value }))
-      const choosePolicy = (key, policy) => {
-        setSelectedPolicyKey(key)
-        setPolicyDraft(policyDraftOf(policy ?? state.retrievalPolicies.find((item) => policyKey(item) === key), state))
-      }
-      const updatePolicy = (field, value) => setPolicyDraft((previous) => ({ ...previous, [field]: value }))
-      const updatePolicyRerank = (field, value) => setPolicyDraft((previous) => ({
-        ...previous,
-        rerank: { ...previous.rerank, [field]: value },
-      }))
-      const credential = draft.credentialRef ? state.credentials[draft.credentialRef] : undefined
-      const embeddingCredential = embeddingDraft.credentialRef ? state.credentials[embeddingDraft.credentialRef] : undefined
-      const check = selected ? state.checks[selected.id] : undefined
-      const embeddingCheck = selectedEmbedding ? state.embeddingChecks[selectedEmbedding.id] : undefined
-      const embeddingModels = embeddingDraft.provider === 'gemini'
-        ? ['gemini-embedding-001', 'gemini-embedding-2']
-        : ['text-embedding-3-small', 'text-embedding-3-large']
-      const policyRerankValid = policyDraft.rerank.strategy === 'rrf'
-        ? String(policyDraft.rerank.k).trim()
-          && Number.isFinite(Number(policyDraft.rerank.k))
-          && Number(policyDraft.rerank.k) > 0
-          && Number(policyDraft.rerank.k) < 16_384
-        : [policyDraft.rerank.denseWeight, policyDraft.rerank.bm25Weight].every((weight) => String(weight).trim()
-            && Number.isFinite(Number(weight))
-            && Number(weight) >= 0
-            && Number(weight) <= 1)
-          && !(Number(policyDraft.rerank.denseWeight) === 0 && Number(policyDraft.rerank.bm25Weight) === 0)
+
+      const connectionSummary = selected && !editingConnection
+        ? h('section', { className: 'dsh-milvus-section', key: 'connection' }, [
+            h('div', { className: 'dsh-milvus-heading-row', key: 'heading' }, [
+              h('h4', { key: 'title' }, 'Connection'),
+              h(StatusPill, { state: connectionCheck?.state ?? 'idle', key: 'pill' }, connectionCheck?.state === 'ready' ? 'Connected' : connectionCheck?.state === 'blocked' ? 'Needs attention' : 'Not tested'),
+            ]),
+            h('div', { className: 'dsh-milvus-summary', key: 'summary' }, [
+              h('strong', { key: 'name' }, selected.name),
+              h('span', { key: 'endpoint' }, selected.endpoint),
+              h('span', { key: 'database' }, `Database: ${selected.database || 'default'}`),
+            ]),
+            connectionCheck ? h('p', { className: 'dsh-milvus-hint', key: 'check-message' }, connectionCheck.message) : null,
+            h('div', { className: 'dsh-milvus-row dsh-milvus-actions', key: 'actions' }, [
+              h('button', { type: 'button', disabled: state.pending, onClick: () => controller.requestCheck(selected), key: 'test' }, 'Test connection'),
+              h('button', { type: 'button', disabled: state.pending, onClick: () => { setDraft(draftOf(selected, state.profiles)); setEditingConnection(true) }, key: 'change' }, 'Change connection'),
+              state.activeProfileId !== selected.id
+                ? h('button', { type: 'button', disabled: state.pending, onClick: () => controller.selectProfile(selected.id), key: 'active' }, 'Use for new sessions')
+                : null,
+            ]),
+          ])
+        : h('section', { className: 'dsh-milvus-section', key: 'connection-form' }, [
+            h('h4', { key: 'title' }, 'Connection'),
+            state.profiles.length ? h(Field, { label: 'Saved connection', key: 'saved' }, h('select', { value: selectedId, disabled: state.pending, onChange: (event) => chooseConnection(event.target.value) }, [
+              h('option', { value: '', key: 'new' }, 'Add another connection'),
+              ...state.profiles.map((profile) => h('option', { value: profile.id, key: profile.id }, profile.name)),
+            ])) : null,
+            h('div', { className: 'dsh-milvus-grid', key: 'grid' }, [
+              h(Field, { label: 'Deployment', key: 'kind' }, h('select', { value: draft.kind, disabled: state.pending || Boolean(selected), onChange: (event) => changeKind(event.target.value) }, [
+                h('option', { value: 'local', key: 'local' }, 'Local Milvus Standalone'),
+                h('option', { value: 'zilliz-cloud', key: 'cloud' }, 'Zilliz Cloud'),
+              ])),
+              h(Field, { label: 'Database (optional)', key: 'database' }, h('input', { value: draft.database, disabled: state.pending, onChange: (event) => updateDraft('database', event.target.value) })),
+            ]),
+            h(Field, { label: 'Endpoint', hint: draft.kind === 'zilliz-cloud' ? 'Zilliz Cloud requires HTTPS.' : 'Example: http://127.0.0.1:19530', key: 'endpoint' }, h('input', { value: draft.endpoint, disabled: state.pending, onChange: (event) => updateDraft('endpoint', event.target.value) })),
+            draft.kind === 'local' && !draft.credentialRef
+              ? h('button', { type: 'button', className: 'dsh-milvus-link-button', disabled: state.pending, onClick: () => updateDraft('credentialRef', credentialRefFor(draft.id || 'local')), key: 'auth' }, 'Add optional authentication')
+              : null,
+            draft.credentialRef ? h(Field, { label: 'Milvus token', hint: 'Saved only in dsh Credentials. Existing values are never displayed.', key: 'token' }, h('input', { type: 'password', autoComplete: 'new-password', value: token, disabled: state.pending, onChange: (event) => setToken(event.target.value) })) : null,
+            h('div', { className: 'dsh-milvus-row dsh-milvus-actions', key: 'actions' }, [
+              h('button', { type: 'button', disabled: state.pending || !draft.endpoint.trim() || (!selected && Boolean(draft.credentialRef) && !token), onClick: async () => {
+                if (!selected && draft.credentialRef && !await controller.writeCredential(draft, token)) return
+                const saved = await controller.saveProfile(draft, selected?.id)
+                if (!saved) return
+                if (selected && token) await controller.writeCredential(saved, token)
+                setSelectedId(saved.id)
+                setToken('')
+                setEditingConnection(false)
+              }, key: 'save' }, selected ? 'Save connection' : 'Connect Milvus'),
+              selected ? h('button', { type: 'button', disabled: state.pending, onClick: () => setEditingConnection(false), key: 'cancel' }, 'Cancel') : null,
+            ]),
+          ])
+
+      const collectionSection = selected && !editingConnection
+        ? h('section', { className: 'dsh-milvus-section', key: 'collection' }, [
+            h('div', { className: 'dsh-milvus-heading-row', key: 'heading' }, [
+              h('h4', { key: 'title' }, 'Collection'),
+              collectionCheck ? h(StatusPill, { state: collectionCheck.state, key: 'pill' }, collectionCheck.state === 'ready'
+                ? collectionCheck.requestedCollection ? 'Inspected by DSH' : 'Collections loaded'
+                : 'Could not inspect') : null,
+            ]),
+            h('p', { className: 'dsh-milvus-hint', key: 'hint' }, 'Choose a collection to see what search already works. Fields and routes come from its Milvus schema.'),
+            h('div', { className: 'dsh-milvus-row', key: 'chooser' }, [
+              h('select', { className: 'dsh-milvus-grow', value: selectedCollection, disabled: state.pending || !collectionCheck?.collections?.length, onChange: (event) => {
+                const name = event.target.value
+                setSelectedCollection(name)
+                setShowSemantic(false)
+                if (name) controller.requestCollectionDiscovery(selected, name)
+              }, key: 'select' }, [
+                h('option', { value: '', key: 'none' }, collectionCheck ? 'Select a collection' : 'Loading collections…'),
+                ...(collectionCheck?.collections ?? []).map((name) => h('option', { value: name, key: name }, name)),
+              ]),
+              h('button', { type: 'button', disabled: state.pending, onClick: () => controller.requestCollectionDiscovery(selected, selectedCollection || undefined), key: 'refresh' }, selectedCollection ? 'Inspect again' : 'Refresh'),
+            ]),
+            collectionCheck ? h('p', { className: `dsh-milvus-hint${collectionCheck.state === 'blocked' ? ' dsh-milvus-error' : ''}`, key: 'status' }, collectionCheck.message) : null,
+          ])
+        : null
+
+      const semanticSetup = showSemantic && inspection
+        ? h('div', { className: 'dsh-milvus-subpanel', key: 'semantic-setup' }, [
+            h('div', { className: 'dsh-milvus-heading-row', key: 'heading' }, [
+              h('div', { key: 'copy' }, [
+                h('strong', { key: 'title' }, denseReady ? 'Change semantic search' : 'Enable semantic search'),
+                h('p', { className: 'dsh-milvus-hint', key: 'hint' }, 'DSH embeds query text on the Host. The generated vector stays in memory and is sent only to Milvus.'),
+              ]),
+              h('button', { type: 'button', disabled: state.pending, onClick: () => setShowSemantic(false), key: 'close' }, 'Close'),
+            ]),
+            h('div', { className: 'dsh-milvus-grid', key: 'provider-row' }, [
+              h(Field, { label: 'Embedding provider', key: 'provider' }, h('select', { value: embeddingChoice, disabled: state.pending, onChange: (event) => chooseEmbedding(event.target.value) }, [
+                h('option', { value: 'new:openai', key: 'new-openai' }, 'New OpenAI provider'),
+                h('option', { value: 'new:gemini', key: 'new-gemini' }, 'New Google Gemini provider'),
+                ...state.embeddingProfiles.map((profile) => h('option', { value: profile.id, key: profile.id }, `Use ${profile.name} · ${profile.model}`)),
+              ])),
+              h(Field, { label: 'Model', key: 'model' }, h('select', { value: semanticProfile?.model ?? embeddingModel, disabled: state.pending || Boolean(semanticProfile), onChange: (event) => setEmbeddingModel(event.target.value) }, semanticModels.map((model) => h('option', { value: model, key: model }, model)))),
+            ]),
+            h('div', { className: 'dsh-milvus-grid', key: 'binding-row' }, [
+              h(Field, { label: `${semanticProvider === 'gemini' ? 'Gemini' : 'OpenAI'} API key`, hint: semanticProfile && !semanticKeyRequired ? 'Already configured. Leave empty to keep it.' : 'Required. Saved only in dsh Credentials.', key: 'key' }, h('input', { type: 'password', autoComplete: 'new-password', value: apiKey, disabled: state.pending || semanticCredential?.writable === false, onChange: (event) => setApiKey(event.target.value) })),
+              h(Field, { label: 'Vector field', hint: 'Choose the field populated with this exact embedding model.', key: 'vector' }, h('select', { value: vectorField, disabled: state.pending || !vectorFields.length, onChange: (event) => setVectorField(event.target.value) }, [
+                h('option', { value: '', key: 'none' }, vectorFields.length ? 'Select a FloatVector field' : 'No FloatVector field found'),
+                ...vectorFields.map((field) => h('option', { value: field.name, key: field.name }, `${field.name}${field.dimension ? ` · ${field.dimension} dimensions` : ''}`)),
+              ])),
+            ]),
+            !vectorFields.length ? h('p', { className: 'dsh-milvus-error', key: 'no-vector' }, 'This collection has no FloatVector field, so semantic search cannot be enabled here.') : null,
+            h('div', { className: 'dsh-milvus-row dsh-milvus-actions', key: 'actions' }, [
+              h('button', { type: 'button', disabled: state.pending || !vectorField || (semanticKeyRequired && !apiKey), onClick: async () => {
+                const result = await controller.configureSemantic({
+                  milvusProfileId: selected.id,
+                  collection: selectedCollection,
+                  vectorField,
+                  embeddingProfileId: semanticProfile?.id,
+                  provider: semanticProvider,
+                  model: semanticProfile?.model ?? embeddingModel,
+                  apiKey,
+                })
+                if (!result) return
+                setApiKey('')
+                setShowSemantic(false)
+                controller.requestCollectionDiscovery(selected, selectedCollection)
+              }, key: 'save' }, denseReady ? 'Save semantic setup' : 'Enable semantic search'),
+              semanticProfile ? h('button', { type: 'button', disabled: state.pending || semanticKeyRequired, onClick: () => controller.requestEmbeddingCheck(semanticProfile), key: 'test' }, 'Test provider') : null,
+            ]),
+            semanticProfile && state.embeddingChecks[semanticProfile.id]
+              ? h('p', { className: 'dsh-milvus-hint', key: 'provider-status' }, state.embeddingChecks[semanticProfile.id].message)
+              : null,
+          ])
+        : null
+
+      const capabilitiesSection = inspection
+        ? h('section', { className: 'dsh-milvus-section', key: 'capabilities' }, [
+            h('h4', { key: 'title' }, 'Search capabilities'),
+            h('div', { className: 'dsh-milvus-capabilities', key: 'rows' }, [
+              h(CapabilityRow, { state: 'ready', title: 'Scalar query', detail: 'Ready · filter and return scalar fields', key: 'scalar' }),
+              h(CapabilityRow, {
+                state: inspection.capabilities.bm25.state,
+                title: 'BM25 search',
+                detail: bm25Ready
+                  ? `${inspection.capabilities.bm25.routes[0].inputField} → ${inspection.capabilities.bm25.routes[0].outputField}`
+                  : inspection.capabilities.bm25.state === 'ambiguous'
+                    ? 'Choose one valid route in Advanced settings'
+                    : 'No schema-proven Milvus BM25 route',
+                key: 'bm25',
+              }),
+              h(CapabilityRow, {
+                state: denseReady ? 'ready' : inspection.capabilities.dense.state === 'ambiguous' ? 'ambiguous' : 'blocked',
+                title: 'Semantic search',
+                detail: denseReady
+                  ? `${boundEmbedding.model} → ${binding.vectorField}`
+                  : denseStructurallyReady
+                    ? 'Embedding API key required'
+                    : 'Add an embedding provider and vector-field mapping',
+                action: h('button', { type: 'button', disabled: state.pending || !vectorFields.length, onClick: openSemantic }, denseReady ? 'Change' : 'Enable'),
+                key: 'dense',
+              }),
+              h(CapabilityRow, {
+                state: hybridReady ? 'ready' : 'blocked',
+                title: 'Hybrid search',
+                detail: hybridReady
+                  ? `${bm25Ready ? 'BM25' : ''} + semantic · ${currentPolicy?.rerank?.strategy === 'weighted' ? 'Weighted' : `RRF (k=${currentPolicy?.rerank?.k ?? 60})`}`
+                  : !bm25Ready
+                    ? 'Requires a valid BM25 route and semantic search'
+                    : 'Enable semantic search first',
+                key: 'hybrid',
+              }),
+            ]),
+            semanticSetup,
+          ])
+        : null
+
+      const advanced = selected && !editingConnection
+        ? h('details', { className: 'dsh-milvus-advanced', key: 'advanced' }, [
+            h('summary', { key: 'summary' }, [
+              h('strong', { key: 'title' }, 'Advanced settings'),
+              h('span', { key: 'hint' }, 'Mappings, BM25 route, and hybrid ranking'),
+            ]),
+            inspection ? h('div', { className: 'dsh-milvus-advanced-body', key: 'body' }, [
+              h('div', { className: 'dsh-milvus-subsection', key: 'mapping' }, [
+                h('h5', { key: 'title' }, 'Vector field mapping'),
+                binding && boundEmbedding
+                  ? h('div', { className: 'dsh-milvus-summary dsh-milvus-summary-inline', key: 'configured' }, [
+                      h('span', { key: 'value' }, `${binding.vectorField} ← ${boundEmbedding.name} (${boundEmbedding.model})`),
+                      h('button', { type: 'button', disabled: state.pending, onClick: async () => {
+                        await controller.removeRetrievalBinding(bindingKey(binding))
+                        controller.requestCollectionDiscovery(selected, selectedCollection)
+                      }, key: 'remove' }, 'Remove mapping'),
+                    ])
+                  : h('p', { className: 'dsh-milvus-hint', key: 'empty' }, 'No semantic mapping for this collection.'),
+              ]),
+              h('div', { className: 'dsh-milvus-subsection', key: 'policy' }, [
+                h('h5', { key: 'title' }, 'BM25 route and hybrid ranking'),
+                bm25Routes.length ? h('div', { key: 'form' }, [
+                  h(Field, { label: 'BM25 route', hint: bm25Routes.length === 1 ? 'The collection exposes one valid route; no override is normally needed.' : 'Choose which schema-proven route hybrid and text search should use.', key: 'route' }, h('select', { value: routeKey, disabled: state.pending, onChange: (event) => setRouteKey(event.target.value) }, bm25Routes.map((route) => h('option', { value: `${route.inputField}\u0000${route.outputField}`, key: `${route.inputField}\u0000${route.outputField}` }, `${route.inputField} → ${route.outputField}`)))),
+                  h(Field, { label: 'Default hybrid ranking', key: 'strategy' }, h('select', { value: rerank.strategy, disabled: state.pending, onChange: (event) => setRerank(event.target.value === 'weighted' ? { strategy: 'weighted', denseWeight: 0.5, bm25Weight: 0.5 } : { strategy: 'rrf', k: 60 }) }, [
+                    h('option', { value: 'rrf', key: 'rrf' }, 'RRF (recommended)'),
+                    h('option', { value: 'weighted', key: 'weighted' }, 'Weighted'),
+                  ])),
+                  rerank.strategy === 'weighted'
+                    ? h('div', { className: 'dsh-milvus-grid', key: 'weights' }, [
+                        h(Field, { label: 'Semantic weight', key: 'dense' }, h('input', { type: 'number', min: 0, max: 1, step: 0.05, value: rerank.denseWeight, disabled: state.pending, onChange: (event) => setRerank((previous) => ({ ...previous, denseWeight: event.target.value })) })),
+                        h(Field, { label: 'BM25 weight', key: 'bm25' }, h('input', { type: 'number', min: 0, max: 1, step: 0.05, value: rerank.bm25Weight, disabled: state.pending, onChange: (event) => setRerank((previous) => ({ ...previous, bm25Weight: event.target.value })) })),
+                      ])
+                    : h(Field, { label: 'RRF k', key: 'k' }, h('input', { type: 'number', min: 1, max: 16383, step: 1, value: rerank.k, disabled: state.pending, onChange: (event) => setRerank((previous) => ({ ...previous, k: event.target.value })) })),
+                  h('div', { className: 'dsh-milvus-row dsh-milvus-actions', key: 'actions' }, [
+                    h('button', { type: 'button', disabled: state.pending || !chosenRoute || !rerankValid, onClick: async () => {
+                      const saved = await controller.saveRetrievalPolicy({
+                        milvusProfileId: selected.id,
+                        collection: selectedCollection,
+                        textField: chosenRoute.inputField,
+                        sparseField: chosenRoute.outputField,
+                        schemaFingerprint: inspection.retrievalSchema.schemaFingerprint,
+                        rerank,
+                      }, currentPolicy ? policyKey(currentPolicy) : undefined)
+                      if (saved) controller.requestCollectionDiscovery(selected, selectedCollection)
+                    }, key: 'save' }, currentPolicy ? 'Save advanced defaults' : 'Create advanced defaults'),
+                    currentPolicy ? h('button', { type: 'button', disabled: state.pending, onClick: async () => {
+                      await controller.removeRetrievalPolicy(policyKey(currentPolicy))
+                      controller.requestCollectionDiscovery(selected, selectedCollection)
+                    }, key: 'remove' }, 'Restore automatic defaults') : null,
+                  ]),
+                ]) : h('p', { className: 'dsh-milvus-hint', key: 'empty' }, 'This collection has no schema-proven BM25 route, so there is no route or hybrid ranking to configure.'),
+              ]),
+            ]) : h('p', { className: 'dsh-milvus-hint dsh-milvus-advanced-empty', key: 'choose' }, 'Select and inspect a collection to configure collection-specific settings.'),
+            h('div', { className: 'dsh-milvus-subsection dsh-milvus-danger', key: 'connection' }, [
+              h('h5', { key: 'title' }, 'Connection management'),
+              state.profiles.length > 1 ? h(Field, { label: 'Current connection', key: 'switch' }, h('select', { value: selectedId, disabled: state.pending, onChange: (event) => chooseConnection(event.target.value) }, state.profiles.map((profile) => h('option', { value: profile.id, key: profile.id }, profile.name)))) : null,
+              h('button', { type: 'button', disabled: state.pending, onClick: async () => {
+                if (!(globalThis.confirm?.(`Remove ${selected.name} and its collection mappings?`) ?? true)) return
+                await controller.removeProfile(selected.id)
+                const nextId = controller.getSnapshot().activeProfileId || controller.getSnapshot().profiles[0]?.id || ''
+                chooseConnection(nextId)
+                setEditingConnection(!nextId)
+              }, key: 'remove' }, 'Remove connection'),
+            ]),
+          ])
+        : null
 
       return h('li', { className: 'dsh-milvus-card' }, [
         h('h3', { key: 'title' }, 'Milvus for DSH'),
-        h('p', { className: 'dsh-milvus-intro', key: 'intro' }, 'Connect a Milvus deployment for scalar, BM25, dense, and hybrid retrieval. BM25 uses a compatible collection schema directly; dense and hybrid additionally need an embedding provider and field binding. Secrets are write-only dsh Credentials and are never stored in plugin settings or chat.'),
+        h('p', { className: 'dsh-milvus-intro', key: 'intro' }, 'Connect Milvus, choose a collection, and DSH will show what already works. Embedding setup appears only when you enable semantic search.'),
         state.error ? h('p', { role: 'alert', className: 'dsh-milvus-error', key: 'error' }, state.error) : null,
-
-        h('section', { className: 'dsh-milvus-section', key: 'milvus' }, [
-          h('h4', { key: 'heading' }, '1. Milvus deployment'),
-          h(Field, { label: 'Profile', key: 'profile' }, h('select', { value: selectedId, disabled: state.pending, onChange: (event) => choose(event.target.value) }, [
-            h('option', { value: '', key: 'new' }, 'Create a new profile'),
-            ...state.profiles.map((profile) => h('option', { value: profile.id, key: profile.id }, profile.name)),
-          ])),
-          h('div', { className: 'dsh-milvus-grid', key: 'fields' }, [
-            h(Field, { label: 'Deployment', hint: selected ? 'Create another profile to use a different deployment type.' : '', key: 'kind' }, h('select', { value: draft.kind, disabled: state.pending || Boolean(selected), onChange: (event) => updateKind(event.target.value) }, [
-              h('option', { value: 'local', key: 'local' }, 'Local Milvus Standalone'),
-              h('option', { value: 'zilliz-cloud', key: 'cloud' }, 'Zilliz Cloud'),
-            ])),
-            h(Field, { label: 'Database (optional)', key: 'database' }, h('input', { value: draft.database, disabled: state.pending, onChange: (event) => update('database', event.target.value) })),
-          ]),
-          h(Field, { label: 'Endpoint', hint: draft.kind === 'zilliz-cloud' ? 'Zilliz Cloud requires HTTPS.' : 'Example: http://127.0.0.1:19530', key: 'endpoint' }, h('input', { value: draft.endpoint, disabled: state.pending, onChange: (event) => update('endpoint', event.target.value) })),
-          draft.kind === 'local' && !draft.credentialRef ? h('button', { type: 'button', className: 'dsh-milvus-inline-button', disabled: state.pending, onClick: () => update('credentialRef', credentialRefFor(draft.id || 'local')), key: 'enable-auth' }, 'Add optional Milvus authentication') : null,
-          draft.credentialRef ? h(Field, { label: 'Milvus token', hint: selected ? (credential?.configured ? `Configured${credential.source ? ` via ${credential.source}` : ''}${credential.writable ? '' : ' (read-only)'}.` : 'Not configured. A saved value is never shown again.') : 'It will be stored in dsh Credentials when this profile is created.', key: 'token' }, h('div', { className: 'dsh-milvus-row' }, [
-            h('input', { type: 'password', autoComplete: 'new-password', value: token, disabled: state.pending || credential?.writable === false, onChange: (event) => setToken(event.target.value), key: 'input' }),
-            selected ? h('button', { type: 'button', disabled: state.pending || !token || credential?.writable === false, onClick: async () => { if (await controller.writeCredential(draft, token)) setToken('') }, key: 'save' }, 'Save token') : null,
-          ])) : null,
-          selected ? h('div', { className: 'dsh-milvus-check', key: 'check' }, [
-            h('button', { type: 'button', disabled: state.pending, onClick: () => controller.requestCheck(selected), key: 'button' }, 'Test Milvus connection'),
-            check ? h('span', { key: 'status', 'data-state': check.state }, `${check.state}: ${check.message}`) : h('span', { key: 'hint' }, 'Not tested yet.'),
-          ]) : null,
-          h('div', { className: 'dsh-milvus-row dsh-milvus-actions', key: 'actions' }, [
-            h('button', { type: 'button', disabled: state.pending || (!selected && Boolean(draft.credentialRef) && !token), onClick: async () => {
-              if (!selected && draft.credentialRef) {
-                if (!await controller.writeCredential(draft, token)) return
-                setToken('')
-              }
-              const saved = await controller.saveProfile(draft, selectedId || undefined)
-              if (saved) choose(saved.id, saved)
-            }, key: 'save' }, selected ? 'Save changes' : 'Create profile'),
-            selected ? h('button', { type: 'button', disabled: state.pending || state.activeProfileId === selectedId, onClick: () => controller.selectProfile(selectedId), key: 'activate' }, state.activeProfileId === selectedId ? 'Active profile' : 'Use for new sessions') : null,
-            selected ? h('button', { type: 'button', disabled: state.pending, onClick: async () => { await controller.removeProfile(selectedId); choose('') }, key: 'remove' }, 'Remove profile') : null,
-          ]),
-        ]),
-
-        h('section', { className: 'dsh-milvus-section', key: 'embedding' }, [
-          h('h4', { key: 'heading' }, '2. Embedding provider'),
-          h('p', { className: 'dsh-milvus-hint', key: 'privacy' }, 'Dense-search query text is sent from the DSH host to this provider. The generated vector stays in host memory and is sent only to Milvus.'),
-          h(Field, { label: 'Embedding profile', key: 'profile' }, h('select', { value: selectedEmbeddingId, disabled: state.pending, onChange: (event) => chooseEmbedding(event.target.value) }, [
-            h('option', { value: '', key: 'new' }, 'Create a new embedding profile'),
-            ...state.embeddingProfiles.map((profile) => h('option', { value: profile.id, key: profile.id }, profile.name)),
-          ])),
-          h('div', { className: 'dsh-milvus-grid', key: 'provider-model' }, [
-            h(Field, { label: 'Provider', key: 'provider' }, h('select', { value: embeddingDraft.provider, disabled: state.pending || Boolean(selectedEmbedding), onChange: (event) => chooseEmbeddingProvider(event.target.value) }, [
-              h('option', { value: 'openai', key: 'openai' }, 'OpenAI'),
-              h('option', { value: 'gemini', key: 'gemini' }, 'Google Gemini'),
-            ])),
-            h(Field, { label: 'Model', key: 'model' }, h('select', { value: embeddingDraft.model, disabled: state.pending, onChange: (event) => setEmbeddingDraft((previous) => ({ ...previous, model: event.target.value })) }, embeddingModels.map((model) => h('option', { value: model, key: model }, model)))),
-          ]),
-          h(Field, { label: `${embeddingDraft.provider === 'gemini' ? 'Gemini' : 'OpenAI'} API key`, hint: selectedEmbedding ? (embeddingCredential?.configured ? `Configured${embeddingCredential.source ? ` via ${embeddingCredential.source}` : ''}${embeddingCredential.writable ? '' : ' (read-only)'}.` : 'Not configured. Dense search will remain blocked.') : 'Required. The key is saved only in dsh Credentials.', key: 'api-key' }, h('div', { className: 'dsh-milvus-row' }, [
-            h('input', { type: 'password', autoComplete: 'new-password', value: apiKey, disabled: state.pending || embeddingCredential?.writable === false, onChange: (event) => setApiKey(event.target.value), key: 'input' }),
-            selectedEmbedding ? h('button', { type: 'button', disabled: state.pending || !apiKey || embeddingCredential?.writable === false, onClick: async () => { if (await controller.writeCredential(embeddingDraft, apiKey)) setApiKey('') }, key: 'save' }, 'Save API key') : null,
-          ])),
-          selectedEmbedding ? h('div', { className: 'dsh-milvus-check', key: 'check' }, [
-            h('button', { type: 'button', disabled: state.pending, onClick: () => controller.requestEmbeddingCheck(selectedEmbedding), key: 'button' }, 'Test embedding provider'),
-            embeddingCheck ? h('span', { key: 'status', 'data-state': embeddingCheck.state }, `${embeddingCheck.state}: ${embeddingCheck.message}`) : h('span', { key: 'hint' }, 'Not tested yet.'),
-          ]) : null,
-          h('div', { className: 'dsh-milvus-row dsh-milvus-actions', key: 'actions' }, [
-            h('button', { type: 'button', disabled: state.pending || (!selectedEmbedding && !apiKey), onClick: async () => {
-              if (!selectedEmbedding) {
-                if (!await controller.writeCredential(embeddingDraft, apiKey)) return
-                setApiKey('')
-              }
-              const saved = await controller.saveEmbeddingProfile(embeddingDraft, selectedEmbeddingId || undefined)
-              if (saved) chooseEmbedding(saved.id, saved)
-            }, key: 'save' }, selectedEmbedding ? 'Save embedding profile' : 'Create embedding profile'),
-            selectedEmbedding ? h('button', { type: 'button', disabled: state.pending, onClick: async () => { await controller.removeEmbeddingProfile(selectedEmbeddingId); chooseEmbedding('') }, key: 'remove' }, 'Remove embedding profile') : null,
-          ]),
-        ]),
-
-        h('section', { className: 'dsh-milvus-section', key: 'binding' }, [
-          h('h4', { key: 'heading' }, '3. Dense retrieval binding'),
-          h('p', { className: 'dsh-milvus-hint', key: 'hint' }, 'Bind the exact FloatVector field that was populated with the same model and vector space. Matching dimensions alone do not make embeddings compatible.'),
-          h(Field, { label: 'Binding', key: 'binding-select' }, h('select', { value: selectedBindingKey, disabled: state.pending, onChange: (event) => chooseBinding(event.target.value) }, [
-            h('option', { value: '', key: 'new' }, 'Create a new binding'),
-            ...state.retrievalBindings.map((binding) => h('option', { value: bindingKey(binding), key: bindingKey(binding) }, `${state.profiles.find((profile) => profile.id === binding.milvusProfileId)?.name ?? binding.milvusProfileId}: ${binding.collection}.${binding.vectorField}`)),
-          ])),
-          h('div', { className: 'dsh-milvus-grid', key: 'binding-fields-1' }, [
-            h(Field, { label: 'Milvus profile', key: 'milvus-profile' }, h('select', { value: bindingDraft.milvusProfileId, disabled: state.pending, onChange: (event) => updateBinding('milvusProfileId', event.target.value) }, [
-              h('option', { value: '', key: 'none' }, 'Select a Milvus profile'),
-              ...state.profiles.map((profile) => h('option', { value: profile.id, key: profile.id }, profile.name)),
-            ])),
-            h(Field, { label: 'Embedding profile', key: 'embedding-profile' }, h('select', { value: bindingDraft.embeddingProfileId, disabled: state.pending, onChange: (event) => updateBinding('embeddingProfileId', event.target.value) }, [
-              h('option', { value: '', key: 'none' }, 'Select an embedding profile'),
-              ...state.embeddingProfiles.map((profile) => h('option', { value: profile.id, key: profile.id }, `${profile.name} (${profile.model})`)),
-            ])),
-          ]),
-          h('div', { className: 'dsh-milvus-grid', key: 'binding-fields-2' }, [
-            h(Field, { label: 'Collection', key: 'collection' }, h('input', { value: bindingDraft.collection, disabled: state.pending, placeholder: 'documents', onChange: (event) => updateBinding('collection', event.target.value) })),
-            h(Field, { label: 'FloatVector field', key: 'vector-field' }, h('input', { value: bindingDraft.vectorField, disabled: state.pending, placeholder: 'embedding', onChange: (event) => updateBinding('vectorField', event.target.value) })),
-          ]),
-          h('div', { className: 'dsh-milvus-row dsh-milvus-actions', key: 'actions' }, [
-            h('button', { type: 'button', disabled: state.pending || !bindingDraft.milvusProfileId || !bindingDraft.embeddingProfileId || !bindingDraft.collection.trim() || !bindingDraft.vectorField.trim(), onClick: async () => {
-              const saved = await controller.saveRetrievalBinding(bindingDraft, selectedBindingKey || undefined)
-              if (saved) chooseBinding(bindingKey(saved), saved)
-            }, key: 'save' }, selectedBinding ? 'Save binding' : 'Create binding'),
-            selectedBinding ? h('button', { type: 'button', disabled: state.pending, onClick: async () => { await controller.removeRetrievalBinding(selectedBindingKey); chooseBinding('') }, key: 'remove' }, 'Remove binding') : null,
-          ]),
-        ]),
-
-        h('section', { className: 'dsh-milvus-section', key: 'policy' }, [
-          h('h4', { key: 'heading' }, '4. Hybrid defaults (optional)'),
-          h('p', { className: 'dsh-milvus-hint', key: 'hint' }, 'Leave this empty when the collection has one BM25 route and the default RRF (k=60) is suitable. Add a policy to choose among multiple BM25 routes or change the default hybrid rerank.'),
-          h(Field, { label: 'Collection policy', key: 'policy-select' }, h('select', { value: selectedPolicyKey, disabled: state.pending, onChange: (event) => choosePolicy(event.target.value) }, [
-            h('option', { value: '', key: 'new' }, 'Create a new collection policy'),
-            ...state.retrievalPolicies.map((policy) => h('option', { value: policyKey(policy), key: policyKey(policy) }, `${state.profiles.find((profile) => profile.id === policy.milvusProfileId)?.name ?? policy.milvusProfileId}: ${policy.collection} (${policy.textField} → ${policy.sparseField})`)),
-          ])),
-          h('div', { className: 'dsh-milvus-grid', key: 'policy-fields-1' }, [
-            h(Field, { label: 'Milvus profile', key: 'milvus-profile' }, h('select', { value: policyDraft.milvusProfileId, disabled: state.pending, onChange: (event) => updatePolicy('milvusProfileId', event.target.value) }, [
-              h('option', { value: '', key: 'none' }, 'Select a Milvus profile'),
-              ...state.profiles.map((profile) => h('option', { value: profile.id, key: profile.id }, profile.name)),
-            ])),
-            h(Field, { label: 'Collection', key: 'collection' }, h('input', { value: policyDraft.collection, disabled: state.pending, placeholder: 'documents', onChange: (event) => updatePolicy('collection', event.target.value) })),
-          ]),
-          h('div', { className: 'dsh-milvus-grid', key: 'policy-fields-2' }, [
-            h(Field, { label: 'BM25 text field', key: 'text-field' }, h('input', { value: policyDraft.textField, disabled: state.pending, placeholder: 'text', onChange: (event) => updatePolicy('textField', event.target.value) })),
-            h(Field, { label: 'SparseFloatVector field', key: 'sparse-field' }, h('input', { value: policyDraft.sparseField, disabled: state.pending, placeholder: 'sparse', onChange: (event) => updatePolicy('sparseField', event.target.value) })),
-          ]),
-          h(Field, { label: 'Default hybrid rerank', key: 'rerank-strategy' }, h('select', { value: policyDraft.rerank.strategy, disabled: state.pending, onChange: (event) => setPolicyDraft((previous) => ({
-            ...previous,
-            rerank: event.target.value === 'weighted'
-              ? { strategy: 'weighted', denseWeight: 0.5, bm25Weight: 0.5 }
-              : { strategy: 'rrf', k: 60 },
-          })) }, [
-            h('option', { value: 'rrf', key: 'rrf' }, 'RRF'),
-            h('option', { value: 'weighted', key: 'weighted' }, 'Weighted'),
-          ])),
-          policyDraft.rerank.strategy === 'weighted'
-            ? h('div', { className: 'dsh-milvus-grid', key: 'weighted-fields' }, [
-                h(Field, { label: 'Dense weight', key: 'dense-weight' }, h('input', { type: 'number', min: 0, max: 1, step: 0.05, value: policyDraft.rerank.denseWeight, disabled: state.pending, onChange: (event) => updatePolicyRerank('denseWeight', event.target.value) })),
-                h(Field, { label: 'BM25 weight', key: 'bm25-weight' }, h('input', { type: 'number', min: 0, max: 1, step: 0.05, value: policyDraft.rerank.bm25Weight, disabled: state.pending, onChange: (event) => updatePolicyRerank('bm25Weight', event.target.value) })),
-              ])
-            : h(Field, { label: 'RRF k', key: 'rrf-k' }, h('input', { type: 'number', min: 0.1, max: 16383, step: 1, value: policyDraft.rerank.k, disabled: state.pending, onChange: (event) => updatePolicyRerank('k', event.target.value) })),
-          h('div', { className: 'dsh-milvus-row dsh-milvus-actions', key: 'actions' }, [
-            h('button', { type: 'button', disabled: state.pending
-              || !policyDraft.milvusProfileId
-              || !policyDraft.collection.trim()
-              || !policyDraft.textField.trim()
-              || !policyDraft.sparseField.trim()
-              || !policyRerankValid, onClick: async () => {
-              const saved = await controller.saveRetrievalPolicy(policyDraft, selectedPolicyKey || undefined)
-              if (saved) choosePolicy(policyKey(saved), saved)
-            }, key: 'save' }, selectedPolicy ? 'Save collection policy' : 'Create collection policy'),
-            selectedPolicy ? h('button', { type: 'button', disabled: state.pending, onClick: async () => { await controller.removeRetrievalPolicy(selectedPolicyKey); choosePolicy('') }, key: 'remove' }, 'Remove collection policy') : null,
-          ]),
-        ]),
+        connectionSummary,
+        collectionSection,
+        capabilitiesSection,
+        advanced,
       ])
     }
 
@@ -594,7 +757,7 @@ globalThis.__ModuleLoader__.load({
       ctx.effect(() => {
         const tag = document.createElement('style')
         tag.dataset.plugin = 'dsh-milvus'
-        tag.textContent = '.dsh-milvus-card{list-style:none;border:1px solid var(--dsw-alias-border-l2,#ccc);border-radius:8px;padding:16px}.dsh-milvus-card h3{margin:0}.dsh-milvus-section{border-top:1px solid var(--dsw-alias-border-l2,#ddd);margin-top:18px;padding-top:14px}.dsh-milvus-section h4{margin:0 0 4px}.dsh-milvus-intro,.dsh-milvus-hint{color:var(--dsw-alias-label-tertiary,#666);font-size:12px}.dsh-milvus-field{display:flex;flex-direction:column;gap:5px;margin-top:12px}.dsh-milvus-label{font-size:13px;font-weight:600}.dsh-milvus-field input,.dsh-milvus-field select{box-sizing:border-box;width:100%;padding:7px;border:1px solid var(--dsw-alias-border-l2,#aaa);border-radius:5px;background:transparent;color:inherit}.dsh-milvus-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}.dsh-milvus-row{display:flex;gap:8px;align-items:center}.dsh-milvus-row input{flex:1}.dsh-milvus-actions{margin-top:16px;flex-wrap:wrap}.dsh-milvus-row button,.dsh-milvus-check button,.dsh-milvus-inline-button{padding:7px 10px}.dsh-milvus-inline-button{margin-top:12px}.dsh-milvus-check{display:flex;gap:8px;align-items:center;margin-top:12px;font-size:12px}.dsh-milvus-error{color:#b42318;font-size:13px}@media(max-width:600px){.dsh-milvus-grid{grid-template-columns:1fr}}'
+        tag.textContent = '.dsh-milvus-card{list-style:none;border:1px solid var(--dsw-alias-border-l2,#ccc);border-radius:10px;padding:18px}.dsh-milvus-card h3{margin:0}.dsh-milvus-card h4{margin:0}.dsh-milvus-card h5{font-size:13px;margin:0 0 8px}.dsh-milvus-intro,.dsh-milvus-hint{color:var(--dsw-alias-label-tertiary,#666);font-size:12px;line-height:1.5}.dsh-milvus-section{border-top:1px solid var(--dsw-alias-border-l2,#ddd);margin-top:18px;padding-top:16px}.dsh-milvus-heading-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.dsh-milvus-summary{display:flex;flex-direction:column;gap:3px;margin-top:10px;font-size:13px}.dsh-milvus-summary span{color:var(--dsw-alias-label-tertiary,#666)}.dsh-milvus-summary-inline{align-items:center;flex-direction:row;justify-content:space-between}.dsh-milvus-pill{border-radius:999px;background:var(--dsw-alias-bg-layer-2,#eee);font-size:11px;padding:3px 8px}.dsh-milvus-pill[data-state=ready]{background:#e7f7ed;color:#15703d}.dsh-milvus-pill[data-state=blocked]{background:#fdecec;color:#b42318}.dsh-milvus-field{display:flex;flex-direction:column;gap:5px;margin-top:12px}.dsh-milvus-label{font-size:13px;font-weight:600}.dsh-milvus-field input,.dsh-milvus-field select,.dsh-milvus-row>select{box-sizing:border-box;width:100%;padding:8px;border:1px solid var(--dsw-alias-border-l2,#aaa);border-radius:6px;background:transparent;color:inherit}.dsh-milvus-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}.dsh-milvus-row{display:flex;gap:8px;align-items:center}.dsh-milvus-grow{flex:1}.dsh-milvus-actions{margin-top:14px;flex-wrap:wrap}.dsh-milvus-card button{padding:7px 10px}.dsh-milvus-link-button{margin-top:12px}.dsh-milvus-error{color:#b42318;font-size:13px}.dsh-milvus-capabilities{display:flex;flex-direction:column;margin-top:10px}.dsh-milvus-capability{display:grid;grid-template-columns:24px 1fr auto;align-items:center;gap:8px;border-top:1px solid var(--dsw-alias-border-l2,#eee);padding:11px 2px}.dsh-milvus-capability:first-child{border-top:0}.dsh-milvus-capability-icon{font-weight:700;text-align:center}.dsh-milvus-capability[data-state=ready] .dsh-milvus-capability-icon{color:#15703d}.dsh-milvus-capability[data-state=ambiguous] .dsh-milvus-capability-icon{color:#b25e09}.dsh-milvus-capability-copy{display:flex;flex-direction:column;font-size:13px}.dsh-milvus-capability-copy span{color:var(--dsw-alias-label-tertiary,#666);font-size:12px;margin-top:2px}.dsh-milvus-subpanel{border:1px solid var(--dsw-alias-border-l2,#ddd);border-radius:8px;margin-top:12px;padding:14px}.dsh-milvus-advanced{border-top:1px solid var(--dsw-alias-border-l2,#ddd);margin-top:18px;padding-top:14px}.dsh-milvus-advanced>summary{cursor:pointer;display:flex;flex-direction:column;font-size:13px;list-style-position:inside}.dsh-milvus-advanced>summary span{color:var(--dsw-alias-label-tertiary,#666);font-size:11px;font-weight:400;margin-top:2px}.dsh-milvus-advanced-body{margin-top:12px}.dsh-milvus-advanced-empty{margin:12px 0}.dsh-milvus-subsection{border-top:1px solid var(--dsw-alias-border-l2,#eee);padding-top:14px;margin-top:14px}.dsh-milvus-danger{margin-bottom:2px}@media(max-width:600px){.dsh-milvus-grid{grid-template-columns:1fr}.dsh-milvus-capability{grid-template-columns:22px 1fr}.dsh-milvus-capability-action{grid-column:2}.dsh-milvus-summary-inline{align-items:flex-start;flex-direction:column}}'
         document.head.appendChild(tag)
         return () => tag.remove()
       }, 'dsh-milvus: settings card styles')

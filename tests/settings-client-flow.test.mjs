@@ -181,9 +181,10 @@ test('the settings card manages profiles while sending a token only to dsh Crede
     collection: 'documents',
     textField: 'body',
     sparseField: 'sparse',
+    schemaFingerprint: `sha256:${'a'.repeat(64)}`,
     rerank: { strategy: 'rrf', k: 80 },
   })
-  assert.equal('schemaFingerprint' in editedPolicy, false)
+  assert.equal(editedPolicy.schemaFingerprint, `sha256:${'a'.repeat(64)}`)
 
   await controller.removeRetrievalPolicy(policyKey)
   assert.deepEqual(JSON.parse(JSON.stringify(profileScope.getSnapshot().value.retrievalPolicies)), [])
@@ -191,7 +192,35 @@ test('the settings card manages profiles while sending a token only to dsh Crede
   await controller.requestEmbeddingCheck(savedEmbedding)
   assert.equal(statusScope.getSnapshot().value.embeddingRequest.profileId, 'openai-embedding')
 
+  await controller.requestCollectionDiscovery(savedLocalProfile, 'documents')
+  assert.deepEqual(JSON.parse(JSON.stringify(statusScope.getSnapshot().value.collectionRequest)), {
+    profileId: 'local',
+    collection: 'documents',
+    requestId: statusScope.getSnapshot().value.collectionRequest.requestId,
+  })
+
   await controller.removeEmbeddingProfile('openai-embedding')
   assert.deepEqual(JSON.parse(JSON.stringify(profileScope.getSnapshot().value.embeddingProfiles)), [])
   assert.deepEqual(JSON.parse(JSON.stringify(profileScope.getSnapshot().value.retrievalBindings)), [])
+
+  const semantic = await controller.configureSemantic({
+    milvusProfileId: 'local',
+    collection: 'documents',
+    vectorField: 'dense_vector',
+    provider: 'gemini',
+    model: 'gemini-embedding-001',
+    apiKey: 'semantic-common-path-secret',
+  })
+  assert.deepEqual(JSON.parse(JSON.stringify(semantic.binding)), {
+    milvusProfileId: 'local',
+    collection: 'documents',
+    vectorField: 'dense_vector',
+    embeddingProfileId: 'gemini-embedding',
+  })
+  assert.equal(semantic.embeddingProfile.provider, 'gemini')
+  assert.equal(JSON.stringify(profileScope.getSnapshot().value).includes('semantic-common-path-secret'), false)
+  assert.deepEqual(credentialWrites.at(-1), {
+    ref: 'DSH_EMBEDDING_GEMINI_GEMINI_EMBEDDING_API_KEY',
+    value: 'semantic-common-path-secret',
+  })
 })
