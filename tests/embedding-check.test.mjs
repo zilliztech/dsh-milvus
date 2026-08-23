@@ -51,3 +51,25 @@ test('embedding connection check distinguishes an unavailable key without return
     message: 'The configured embedding API key is unavailable.',
   })
 })
+
+test('embedding connection checks use a model-compatible probe dimension', async () => {
+  const { checkEmbeddingProfile } = await import('../embedding-check.mjs')
+  let dimensions
+  const result = await checkEmbeddingProfile({
+    id: 'mistral-main',
+    provider: 'mistral',
+    model: 'mistral-embed',
+    credentialRef: 'MISTRAL_API_KEY',
+  }, {
+    providerFactory: () => ({
+      embedQuery: async (request) => {
+        dimensions = request.dimensions
+        return { kind: 'ready', vector: Array(request.dimensions).fill(0), provenance: {} }
+      },
+    }),
+    now: () => 77,
+  })
+
+  assert.equal(dimensions, 1_024)
+  assert.equal(result.state, 'ready')
+})

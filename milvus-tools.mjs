@@ -1,4 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { EMBEDDING_PROVIDERS } from './embedding-models.mjs'
 import { collectionCapabilities, resolveBm25Route, resolveRetrievalBinding } from './retrieval-capabilities.mjs'
 
 function blocked(reason, message) {
@@ -490,7 +491,7 @@ const operationOutput = {
             additionalProperties: false,
             properties: {
               profileId: { type: 'string', required: true },
-              provider: { type: 'string', required: true, enum: ['openai', 'gemini'] },
+              provider: { type: 'string', required: true, enum: [...EMBEDDING_PROVIDERS] },
               model: { type: 'string', required: true },
               dimension: { type: 'integer', required: true },
               latencyMs: { type: 'number', required: true },

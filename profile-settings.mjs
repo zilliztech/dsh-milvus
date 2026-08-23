@@ -1,8 +1,8 @@
 import z from '@deepseek-ai/schemastery'
+import { EMBEDDING_PROVIDER_CATALOG, EMBEDDING_PROVIDERS, embeddingModelsFor } from './embedding-models.mjs'
 
 export const PROFILE_KINDS = ['local', 'zilliz-cloud']
-export const EMBEDDING_PROVIDERS = ['openai', 'gemini']
-export const GEMINI_EMBEDDING_MODELS = ['gemini-embedding-001', 'gemini-embedding-2']
+export { EMBEDDING_PROVIDERS }
 
 const profileIdPattern = /^[a-z][a-z0-9-]{0,63}$/
 const credentialRefPattern = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -23,10 +23,7 @@ export const ProfileConfig = z.object({
 export const EmbeddingProfileConfig = z.object({
   id: z.string().required().description('Stable embedding profile identifier.'),
   name: z.string().required().description('Human-readable embedding profile name.'),
-  provider: z.union([
-    z.const('openai'),
-    z.const('gemini'),
-  ]).required().description('Embedding API provider.'),
+  provider: z.union(EMBEDDING_PROVIDERS.map((provider) => z.const(provider))).required().description('Embedding API provider.'),
   model: z.string().required().description('Embedding model identifier.'),
   credentialRef: z.string().required().description('Write-only dsh credential reference.'),
 })
@@ -196,8 +193,9 @@ export function validateProfileSettings(settings) {
     if (typeof model !== 'string' || !model.trim()) {
       fail(`embedding profile "${id}" model is required`)
     }
-    if (provider === 'gemini' && !GEMINI_EMBEDDING_MODELS.includes(model)) {
-      fail(`embedding profile "${id}" Gemini model is unsupported`)
+    if (!embeddingModelsFor(provider).includes(model)) {
+      const label = EMBEDDING_PROVIDER_CATALOG[provider]?.label ?? provider
+      fail(`embedding profile "${id}" ${label} model is unsupported`)
     }
     if (typeof credentialRef !== 'string' || !credentialRefPattern.test(credentialRef)) {
       fail(`embedding profile "${id}" credentialRef must be a POSIX environment-style identifier`)

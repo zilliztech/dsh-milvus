@@ -1,5 +1,12 @@
+import { validateEmbeddingModelDimension } from './embedding-models.mjs'
+
 const OPENAI_EMBEDDINGS_URL = 'https://api.openai.com/v1/embeddings'
 const GEMINI_API_ROOT = 'https://generativelanguage.googleapis.com/v1beta/models'
+const COHERE_EMBEDDINGS_URL = 'https://api.cohere.com/v2/embed'
+const VOYAGE_EMBEDDINGS_URL = 'https://api.voyageai.com/v1/embeddings'
+const MISTRAL_EMBEDDINGS_URL = 'https://api.mistral.ai/v1/embeddings'
+const JINA_EMBEDDINGS_URL = 'https://api.jina.ai/v1/embeddings'
+const TOGETHER_EMBEDDINGS_URL = 'https://api.together.ai/v1/embeddings'
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_EMBEDDING_DIMENSION = 3_072
 
@@ -8,7 +15,7 @@ function blocked(reason, message) {
 }
 
 function providerFailure(status) {
-  if (status === 401 || status === 403) {
+  if (status === 401 || status === 403 || status === 498) {
     return blocked('embedding_auth_rejected', 'The embedding provider rejected the configured credential.')
   }
   if (status === 429) {
@@ -33,6 +40,8 @@ function validateRequest(profile, text, dimensions) {
   if (!Number.isInteger(dimensions) || dimensions < 1 || dimensions > MAX_EMBEDDING_DIMENSION) {
     return blocked('unsupported_vector_dimension', 'The target vector field must have a supported dimension from 1 through 3,072.')
   }
+  const incompatible = validateEmbeddingModelDimension(profile, dimensions)
+  if (incompatible) return blocked(incompatible.reason, incompatible.message)
 }
 
 function normalizeVector(vector) {
@@ -77,6 +86,33 @@ function openAIRequest(profile, text, dimensions, credential) {
   }
 }
 
+function bearerRequest(url, credential, body, extract, usage) {
+  return {
+    url,
+    init: {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${credential}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    },
+    extract,
+    usage,
+  }
+}
+
+function standardUsage(payload) {
+  if (!payload?.usage) return undefined
+  const promptTokens = payload.usage.prompt_tokens ?? payload.usage.input_tokens
+  const totalTokens = payload.usage.total_tokens
+  const usage = {
+    ...(Number.isFinite(promptTokens) ? { promptTokens } : {}),
+    ...(Number.isFinite(totalTokens) ? { totalTokens } : {}),
+  }
+  return Object.keys(usage).length ? usage : undefined
+}
+
 function geminiRequest(profile, text, dimensions, credential) {
   const isLegacyModel = profile.model === 'gemini-embedding-001'
   const preparedText = isLegacyModel ? text : `task: search result | query: ${text}`
@@ -98,6 +134,67 @@ function geminiRequest(profile, text, dimensions, credential) {
     extract: (payload) => payload?.embedding?.values,
     normalize: isLegacyModel && dimensions < MAX_EMBEDDING_DIMENSION,
   }
+}
+
+function cohereRequest(profile, text, dimensions, credential) {
+  return bearerRequest(COHERE_EMBEDDINGS_URL, credential, {
+    model: profile.model,
+    texts: [text],
+    input_type: 'search_query',
+    ...(profile.model === 'embed-v4.0' ? { output_dimension: dimensions } : {}),
+    embedding_types: ['float'],
+  }, (payload) => payload?.embeddings?.float?.[0])
+}
+
+function voyageRequest(profile, text, dimensions, credential) {
+  const supportsFlexibleDimensions = !['voyage-finance-2', 'voyage-law-2'].includes(profile.model)
+  return bearerRequest(VOYAGE_EMBEDDINGS_URL, credential, {
+    input: text,
+    model: profile.model,
+    input_type: 'query',
+    truncation: false,
+    ...(supportsFlexibleDimensions ? { output_dimension: dimensions } : {}),
+    output_dtype: 'float',
+  }, (payload) => payload?.data?.[0]?.embedding, standardUsage)
+}
+
+function mistralRequest(profile, text, dimensions, credential) {
+  return bearerRequest(MISTRAL_EMBEDDINGS_URL, credential, {
+    input: [text],
+    model: profile.model,
+    encoding_format: 'float',
+    ...(profile.model === 'codestral-embed'
+      ? { output_dimension: dimensions, output_dtype: 'float' }
+      : {}),
+  }, (payload) => payload?.data?.[0]?.embedding, standardUsage)
+}
+
+function jinaRequest(profile, text, dimensions, credential) {
+  return bearerRequest(JINA_EMBEDDINGS_URL, credential, {
+    input: [text],
+    model: profile.model,
+    task: 'retrieval.query',
+    dimensions,
+    normalized: true,
+    embedding_type: 'float',
+  }, (payload) => payload?.data?.[0]?.embedding, standardUsage)
+}
+
+function togetherRequest(profile, text, _dimensions, credential) {
+  return bearerRequest(TOGETHER_EMBEDDINGS_URL, credential, {
+    input: text,
+    model: profile.model,
+  }, (payload) => payload?.data?.[0]?.embedding, standardUsage)
+}
+
+const requestFactories = {
+  openai: openAIRequest,
+  gemini: geminiRequest,
+  cohere: cohereRequest,
+  voyage: voyageRequest,
+  mistral: mistralRequest,
+  jina: jinaRequest,
+  together: togetherRequest,
 }
 
 /**
@@ -127,11 +224,7 @@ export function createEmbeddingProvider({
         return blocked('embedding_credential_unavailable', 'The embedding profile credential is unavailable.')
       }
 
-      const request = profile.provider === 'openai'
-        ? openAIRequest(profile, text, dimensions, resolved.value)
-        : profile.provider === 'gemini'
-          ? geminiRequest(profile, text, dimensions, resolved.value)
-          : undefined
+      const request = requestFactories[profile.provider]?.(profile, text, dimensions, resolved.value)
       if (!request) {
         return blocked('embedding_provider_unsupported', 'The configured embedding provider is unsupported.')
       }

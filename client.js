@@ -25,13 +25,80 @@ globalThis.__ModuleLoader__.load({
       const suffix = String(id).toUpperCase().replace(/[^A-Z0-9]/g, '_')
       return suffix ? `DSH_MILVUS_${suffix}_TOKEN` : ''
     }
-    const embeddingDefaults = {
-      openai: { id: 'openai-embedding', name: 'OpenAI Embedding', model: 'text-embedding-3-small' },
-      gemini: { id: 'gemini-embedding', name: 'Gemini Embedding', model: 'gemini-embedding-001' },
+    const embeddingProviders = {
+      openai: {
+        label: 'OpenAI', id: 'openai-embedding', name: 'OpenAI Embedding',
+        models: ['text-embedding-3-small', 'text-embedding-3-large', 'text-embedding-ada-002'],
+      },
+      gemini: {
+        label: 'Google Gemini', id: 'gemini-embedding', name: 'Gemini Embedding',
+        models: ['gemini-embedding-2', 'gemini-embedding-001'],
+      },
+      cohere: {
+        label: 'Cohere', id: 'cohere-embedding', name: 'Cohere Embedding',
+        models: ['embed-v4.0', 'embed-english-v3.0', 'embed-english-light-v3.0', 'embed-multilingual-v3.0', 'embed-multilingual-light-v3.0'],
+      },
+      voyage: {
+        label: 'Voyage AI', id: 'voyage-embedding', name: 'Voyage AI Embedding',
+        models: ['voyage-4', 'voyage-4-large', 'voyage-4-lite', 'voyage-code-4', 'voyage-3.5', 'voyage-3.5-lite', 'voyage-code-3', 'voyage-finance-2', 'voyage-law-2'],
+      },
+      mistral: {
+        label: 'Mistral AI', id: 'mistral-embedding', name: 'Mistral AI Embedding',
+        models: ['mistral-embed', 'codestral-embed'],
+      },
+      jina: {
+        label: 'Jina AI', id: 'jina-embedding', name: 'Jina AI Embedding',
+        models: ['jina-embeddings-v5-text-small', 'jina-embeddings-v5-text-nano', 'jina-embeddings-v5-omni-small', 'jina-embeddings-v5-omni-nano', 'jina-embeddings-v4', 'jina-embeddings-v3'],
+      },
+      together: {
+        label: 'Together AI', id: 'together-embedding', name: 'Together AI Embedding',
+        models: ['intfloat/multilingual-e5-large-instruct'],
+      },
     }
-    const embeddingModelsFor = (provider) => provider === 'gemini'
-      ? ['gemini-embedding-001', 'gemini-embedding-2']
-      : ['text-embedding-3-small', 'text-embedding-3-large']
+    const embeddingDefaults = Object.fromEntries(Object.entries(embeddingProviders).map(([provider, definition]) => [provider, {
+      id: definition.id,
+      name: definition.name,
+      model: definition.models[0],
+    }]))
+    const embeddingModelsFor = (provider) => embeddingProviders[provider]?.models ?? []
+    const embeddingProviderLabel = (provider) => embeddingProviders[provider]?.label ?? provider
+    const embeddingDimensionRules = {
+      'text-embedding-3-small': { minimum: 1, maximum: 1536 },
+      'text-embedding-3-large': { minimum: 1, maximum: 3072 },
+      'text-embedding-ada-002': { values: [1536] },
+      'gemini-embedding-2': { minimum: 128, maximum: 3072 },
+      'gemini-embedding-001': { minimum: 128, maximum: 3072 },
+      'embed-v4.0': { values: [256, 512, 1024, 1536] },
+      'embed-english-v3.0': { values: [1024] },
+      'embed-english-light-v3.0': { values: [384] },
+      'embed-multilingual-v3.0': { values: [1024] },
+      'embed-multilingual-light-v3.0': { values: [384] },
+      'voyage-4-large': { values: [256, 512, 1024, 2048] },
+      'voyage-4': { values: [256, 512, 1024, 2048] },
+      'voyage-4-lite': { values: [256, 512, 1024, 2048] },
+      'voyage-code-4': { values: [256, 512, 1024, 2048] },
+      'voyage-3.5': { values: [256, 512, 1024, 2048] },
+      'voyage-3.5-lite': { values: [256, 512, 1024, 2048] },
+      'voyage-code-3': { values: [256, 512, 1024, 2048] },
+      'voyage-finance-2': { values: [1024] },
+      'voyage-law-2': { values: [1024] },
+      'mistral-embed': { values: [1024] },
+      'codestral-embed': { minimum: 1, maximum: 3072 },
+      'jina-embeddings-v5-text-small': { values: [32, 64, 128, 256, 512, 768, 1024] },
+      'jina-embeddings-v5-text-nano': { values: [32, 64, 128, 256, 512, 768] },
+      'jina-embeddings-v5-omni-small': { values: [32, 64, 128, 256, 512, 768, 1024] },
+      'jina-embeddings-v5-omni-nano': { values: [32, 64, 128, 256, 512, 768] },
+      'jina-embeddings-v4': { values: [128, 256, 512, 1024, 2048] },
+      'jina-embeddings-v3': { values: [32, 64, 128, 256, 512, 768, 1024] },
+      'intfloat/multilingual-e5-large-instruct': { values: [1024] },
+    }
+    const embeddingSupportsDimension = (model, dimension) => {
+      const rule = embeddingDimensionRules[model]
+      if (!rule || !Number.isInteger(dimension)) return false
+      return rule.values
+        ? rule.values.includes(dimension)
+        : dimension >= rule.minimum && dimension <= rule.maximum
+    }
     const nextEmbeddingIdentity = (provider, profiles) => {
       const base = embeddingDefaults[provider]
       const ids = new Set(profiles.map((profile) => profile.id))
@@ -436,8 +503,10 @@ globalThis.__ModuleLoader__.load({
         ? state.embeddingProfiles.find((profile) => profile.id === binding.embeddingProfileId)
         : undefined
       const boundCredential = boundEmbedding ? state.credentials[boundEmbedding.credentialRef] : undefined
+      const boundVectorField = binding ? vectorFields.find((field) => field.name === binding.vectorField) : undefined
       const denseStructurallyReady = inspection?.capabilities.dense.state === 'ready'
-      const denseReady = denseStructurallyReady && boundCredential?.configured === true
+      const denseDimensionCompatible = Boolean(boundEmbedding && embeddingSupportsDimension(boundEmbedding.model, boundVectorField?.dimension))
+      const denseReady = denseStructurallyReady && denseDimensionCompatible && boundCredential?.configured === true
       const bm25Ready = inspection?.capabilities.bm25.state === 'ready'
       const hybridReady = denseReady && bm25Ready
       const currentPolicy = selected && selectedCollection
@@ -448,8 +517,11 @@ globalThis.__ModuleLoader__.load({
         : state.embeddingProfiles.find((profile) => profile.id === embeddingChoice)
       const semanticProvider = semanticProfile?.provider ?? embeddingChoice.slice(4)
       const semanticModels = embeddingModelsFor(semanticProvider)
+      const semanticModel = semanticProfile?.model ?? embeddingModel
       const semanticCredential = semanticProfile ? state.credentials[semanticProfile.credentialRef] : undefined
       const semanticKeyRequired = semanticProfile ? semanticCredential?.configured !== true : true
+      const selectedVectorField = vectorFields.find((field) => field.name === vectorField)
+      const semanticDimensionCompatible = embeddingSupportsDimension(semanticModel, selectedVectorField?.dimension)
       const chosenRoute = bm25Routes.find((route) => `${route.inputField}\u0000${route.outputField}` === routeKey)
       const rerankValid = rerank.strategy === 'rrf'
         ? Number.isFinite(Number(rerank.k)) && Number(rerank.k) > 0 && Number(rerank.k) < 16_384
@@ -494,7 +566,7 @@ globalThis.__ModuleLoader__.load({
         } else {
           setEmbeddingChoice('new:openai')
           setEmbeddingModel(embeddingDefaults.openai.model)
-          setVectorField(vectorFields[0]?.name ?? '')
+          setVectorField(vectorFields.find((field) => embeddingSupportsDimension(embeddingDefaults.openai.model, field.dimension))?.name ?? '')
         }
         setApiKey('')
         setShowSemantic(true)
@@ -503,7 +575,14 @@ globalThis.__ModuleLoader__.load({
         setEmbeddingChoice(value)
         const profile = state.embeddingProfiles.find((item) => item.id === value)
         const provider = profile?.provider ?? value.slice(4)
-        setEmbeddingModel(profile?.model ?? embeddingDefaults[provider].model)
+        const model = profile?.model ?? embeddingDefaults[provider].model
+        setEmbeddingModel(model)
+        setVectorField((current) => {
+          const currentField = vectorFields.find((field) => field.name === current)
+          return embeddingSupportsDimension(model, currentField?.dimension)
+            ? current
+            : vectorFields.find((field) => embeddingSupportsDimension(model, field.dimension))?.name ?? ''
+        })
         setApiKey('')
       }
 
@@ -595,29 +674,38 @@ globalThis.__ModuleLoader__.load({
             ]),
             h('div', { className: 'dsh-milvus-grid', key: 'provider-row' }, [
               h(Field, { label: 'Embedding provider', key: 'provider' }, h('select', { value: embeddingChoice, disabled: state.pending, onChange: (event) => chooseEmbedding(event.target.value) }, [
-                h('option', { value: 'new:openai', key: 'new-openai' }, 'New OpenAI provider'),
-                h('option', { value: 'new:gemini', key: 'new-gemini' }, 'New Google Gemini provider'),
+                ...Object.entries(embeddingProviders).map(([provider, definition]) => h('option', { value: `new:${provider}`, key: `new-${provider}` }, `New ${definition.label} provider`)),
                 ...state.embeddingProfiles.map((profile) => h('option', { value: profile.id, key: profile.id }, `Use ${profile.name} · ${profile.model}`)),
               ])),
-              h(Field, { label: 'Model', key: 'model' }, h('select', { value: semanticProfile?.model ?? embeddingModel, disabled: state.pending || Boolean(semanticProfile), onChange: (event) => setEmbeddingModel(event.target.value) }, semanticModels.map((model) => h('option', { value: model, key: model }, model)))),
+              h(Field, { label: 'Model', key: 'model' }, h('select', { value: semanticModel, disabled: state.pending || Boolean(semanticProfile), onChange: (event) => {
+                const model = event.target.value
+                setEmbeddingModel(model)
+                setVectorField((current) => {
+                  const currentField = vectorFields.find((field) => field.name === current)
+                  return embeddingSupportsDimension(model, currentField?.dimension)
+                    ? current
+                    : vectorFields.find((field) => embeddingSupportsDimension(model, field.dimension))?.name ?? ''
+                })
+              } }, semanticModels.map((model) => h('option', { value: model, key: model }, model)))),
             ]),
             h('div', { className: 'dsh-milvus-grid', key: 'binding-row' }, [
-              h(Field, { label: `${semanticProvider === 'gemini' ? 'Gemini' : 'OpenAI'} API key`, hint: semanticProfile && !semanticKeyRequired ? 'Already configured. Leave empty to keep it.' : 'Required. Saved only in dsh Credentials.', key: 'key' }, h('input', { type: 'password', autoComplete: 'new-password', value: apiKey, disabled: state.pending || semanticCredential?.writable === false, onChange: (event) => setApiKey(event.target.value) })),
-              h(Field, { label: 'Vector field', hint: 'Choose the field populated with this exact embedding model.', key: 'vector' }, h('select', { value: vectorField, disabled: state.pending || !vectorFields.length, onChange: (event) => setVectorField(event.target.value) }, [
-                h('option', { value: '', key: 'none' }, vectorFields.length ? 'Select a FloatVector field' : 'No FloatVector field found'),
-                ...vectorFields.map((field) => h('option', { value: field.name, key: field.name }, `${field.name}${field.dimension ? ` · ${field.dimension} dimensions` : ''}`)),
+              h(Field, { label: `${embeddingProviderLabel(semanticProvider)} API key`, hint: semanticProfile && !semanticKeyRequired ? 'Already configured. Leave empty to keep it.' : 'Required. Saved only in dsh Credentials.', key: 'key' }, h('input', { type: 'password', autoComplete: 'new-password', value: apiKey, disabled: state.pending || semanticCredential?.writable === false, onChange: (event) => setApiKey(event.target.value) })),
+              h(Field, { label: 'Vector field', hint: 'Only dimensions supported by the selected model can be chosen. The field must also contain vectors from that exact model.', key: 'vector' }, h('select', { value: vectorField, disabled: state.pending || !vectorFields.length, onChange: (event) => setVectorField(event.target.value) }, [
+                h('option', { value: '', key: 'none' }, vectorFields.length ? 'Select a compatible FloatVector field' : 'No FloatVector field found'),
+                ...vectorFields.map((field) => h('option', { value: field.name, key: field.name, disabled: !embeddingSupportsDimension(semanticModel, field.dimension) }, `${field.name}${field.dimension ? ` · ${field.dimension} dimensions` : ''}${embeddingSupportsDimension(semanticModel, field.dimension) ? '' : ' · incompatible'}`)),
               ])),
             ]),
             !vectorFields.length ? h('p', { className: 'dsh-milvus-error', key: 'no-vector' }, 'This collection has no FloatVector field, so semantic search cannot be enabled here.') : null,
+            vectorField && !semanticDimensionCompatible ? h('p', { className: 'dsh-milvus-error', key: 'dimension' }, 'The selected model cannot produce this vector field dimension. Choose a compatible model or field.') : null,
             h('div', { className: 'dsh-milvus-row dsh-milvus-actions', key: 'actions' }, [
-              h('button', { type: 'button', disabled: state.pending || !vectorField || (semanticKeyRequired && !apiKey), onClick: async () => {
+              h('button', { type: 'button', disabled: state.pending || !vectorField || !semanticDimensionCompatible || (semanticKeyRequired && !apiKey), onClick: async () => {
                 const result = await controller.configureSemantic({
                   milvusProfileId: selected.id,
                   collection: selectedCollection,
                   vectorField,
                   embeddingProfileId: semanticProfile?.id,
                   provider: semanticProvider,
-                  model: semanticProfile?.model ?? embeddingModel,
+                  model: semanticModel,
                   apiKey,
                 })
                 if (!result) return
@@ -653,6 +741,8 @@ globalThis.__ModuleLoader__.load({
                 title: 'Semantic search',
                 detail: denseReady
                   ? `${boundEmbedding.model} → ${binding.vectorField}`
+                  : denseStructurallyReady && !denseDimensionCompatible
+                    ? `Configured model cannot produce ${boundVectorField?.dimension ?? 'this field'} dimensions`
                   : denseStructurallyReady
                     ? 'Embedding API key required'
                     : 'Add an embedding provider and vector-field mapping',

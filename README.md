@@ -3,8 +3,8 @@
 Milvus for DSH lets a DSH Web agent inspect and search a Milvus deployment
 from chat. It supports Local Milvus and Zilliz Cloud, exact entity lookup,
 scalar queries, BM25 full-text search, and dense+BM25 hybrid retrieval.
-Natural-language dense search uses a DSH-managed OpenAI or Gemini embedding
-provider; BM25 runs entirely from the collection's Milvus Function schema.
+Natural-language dense search uses a DSH-managed embedding provider; BM25 runs
+entirely from the collection's Milvus Function schema.
 
 Every Milvus operation exposed by this plugin is read-only. The plugin does not
 create collections, insert data, change indexes, or delete anything.
@@ -14,8 +14,8 @@ create collections, insert data, change indexes, or delete anything.
 - DSH Web `0.1.0-rc.7` or later
 - Node.js 22.19 or later
 - A Milvus HTTP(S) endpoint reachable from the DSH Web host
-- Optional: an [OpenAI API key](https://platform.openai.com/api-keys) or
-  [Gemini API key](https://aistudio.google.com/app/apikey) for dense search
+- Optional: an API key from one of the supported embedding providers for dense
+  and hybrid search
 
 ## Install
 
@@ -83,7 +83,8 @@ This step is required only for natural-language dense and hybrid search. BM25
 text search does not use an external embedding provider.
 
 1. Select **Enable** on the Semantic search capability.
-2. Choose **OpenAI** or **Google Gemini** and a model.
+2. Choose a provider and model that match the vectors already stored in the
+   collection.
 3. Enter the provider API key.
 4. Choose one `FloatVector` field discovered from the selected collection.
 5. Select **Enable semantic search**.
@@ -96,10 +97,26 @@ interchangeable.
 
 Supported models in the settings UI:
 
-| Provider | Models |
-| --- | --- |
-| OpenAI | `text-embedding-3-small`, `text-embedding-3-large` |
-| Gemini | `gemini-embedding-001`, `gemini-embedding-2` |
+| Provider | Models | Supported output dimensions |
+| --- | --- | --- |
+| OpenAI | `text-embedding-3-small`, `text-embedding-3-large`, `text-embedding-ada-002` | 1–1536; 1–3072; fixed 1536 |
+| Google Gemini | `gemini-embedding-2`, `gemini-embedding-001` | 128–3072 |
+| Cohere | `embed-v4.0`, `embed-english-v3.0`, `embed-english-light-v3.0`, `embed-multilingual-v3.0`, `embed-multilingual-light-v3.0` | v4: 256/512/1024/1536; v3 full: 1024; v3 light: 384 |
+| Voyage AI | `voyage-4`, `voyage-4-large`, `voyage-4-lite`, `voyage-code-4`, `voyage-3.5`, `voyage-3.5-lite`, `voyage-code-3`, `voyage-finance-2`, `voyage-law-2` | 4/3.5/code-3: 256/512/1024/2048; finance/law: 1024 |
+| Mistral AI | `mistral-embed`, `codestral-embed` | 1024; 1–3072 |
+| Jina AI | `jina-embeddings-v5-text-small`, `jina-embeddings-v5-text-nano`, `jina-embeddings-v5-omni-small`, `jina-embeddings-v5-omni-nano`, `jina-embeddings-v4`, `jina-embeddings-v3` | small/v3: 32/64/128/256/512/768/1024; nano: through 768; v4: 128/256/512/1024/2048 |
+| Together AI | `intfloat/multilingual-e5-large-instruct` | 1024 |
+
+The first model shown for each provider is the recommended default. Older
+models appear only when the provider still serves them and they are useful for
+querying an existing collection created in that model's vector space. The
+catalog intentionally excludes deprecated models and models that require a
+dedicated endpoint.
+
+The form disables vector fields whose dimensions the selected model cannot
+produce. Dimension compatibility is necessary but not sufficient: the stored
+document vectors must have been generated with that exact provider, model,
+task mode, and vector space.
 
 Milvus tokens and embedding API keys are saved through write-only DSH
 Credentials. Their values are never stored in plugin settings, returned to the
@@ -310,6 +327,14 @@ Read-only integration probes run only when an endpoint is supplied:
 ```bash
 MILVUS_TEST_ENDPOINT=http://127.0.0.1:19530 npm run test:integration
 MILVUS_TEST_ENDPOINT=http://127.0.0.1:19530 npm run test:integration:connection
+```
+
+Provider API smoke tests are separately network-gated. Set any supported key
+in the environment, then opt in explicitly; providers without a key are
+skipped, and neither keys nor returned vectors are printed:
+
+```bash
+EMBEDDING_TEST_ALLOW_NETWORK=1 npm run test:integration:embeddings
 ```
 
 The mutation integration test creates, searches, and removes a disposable

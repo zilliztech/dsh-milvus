@@ -21,8 +21,14 @@ test('the published package contains a newcomer installation and safe Cloud smok
   assert.match(readme, /Advanced settings/i)
   assert.match(readme, /Collection selector is populated/i)
   assert.match(readme, /Enable semantic search/i)
-  assert.match(readme, /OpenAI API key/)
-  assert.match(readme, /Gemini API key/)
+  for (const provider of ['OpenAI', 'Google Gemini', 'Cohere', 'Voyage AI', 'Mistral AI', 'Jina AI', 'Together AI']) {
+    assert.match(readme, new RegExp(provider))
+  }
+  const { EMBEDDING_PROVIDER_CATALOG } = await import('../embedding-models.mjs')
+  for (const definition of Object.values(EMBEDDING_PROVIDER_CATALOG)) {
+    for (const model of Object.keys(definition.models)) assert.match(readme, new RegExp(model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  }
+  assert.match(readme, /EMBEDDING_TEST_ALLOW_NETWORK=1/)
   assert.match(readme, /retrieval_binding_absent/)
   assert.match(readme, /generated query vectors are never returned/i)
   assert.match(readme, /Zilliz Cloud/)

@@ -20,6 +20,7 @@
   "files": [
     "index.mjs",
     "profile-settings.mjs",
+    "embedding-models.mjs",
     "embedding-provider.mjs",
     "embedding-check.mjs",
     "connection-check.mjs",
@@ -37,6 +38,7 @@
     "test": "node --test tests/*.test.mjs",
     "test:integration": "node --test tests/sdk-compatibility.integration.test.mjs",
     "test:integration:connection": "node --test tests/connection-check.integration.test.mjs",
+    "test:integration:embeddings": "node --test tests/embedding-provider.integration.test.mjs",
     "test:integration:mutation": "node --test tests/sdk-mutation.integration.test.mjs",
     "test:integration:retrieval": "node --test tests/embedding-retrieval.integration.test.mjs",
     "test:integration:hybrid": "node --test tests/bm25-hybrid.integration.test.mjs"

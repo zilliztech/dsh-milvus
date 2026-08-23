@@ -5,8 +5,10 @@
 > decisions below remain active.
 
 Natural-language dense search generates query embeddings on the DSH host with
-a named OpenAI or Gemini embedding profile. A retrieval binding selects the
-embedding profile for one Milvus deployment, collection, and FloatVector field.
+a named supported embedding profile. A retrieval binding selects the embedding
+profile for one Milvus deployment, collection, and FloatVector field. The
+curated provider catalog is expanded in
+[ADR 0005](./0005-curated-embedding-provider-catalog.md).
 
 The chat tool accepts query text but does not accept a provider, model, API key,
 endpoint, or vector. Provider keys remain in DSH Credentials. The generated

@@ -88,7 +88,26 @@ test('embedding profiles and retrieval bindings contain references but no API ke
   assert.equal(JSON.stringify(settings).includes('sk-'), false)
 })
 
-test('embedding settings reject unsupported providers, Gemini models, dangling references, and duplicate bindings', async () => {
+test('embedding settings accept the curated seven-provider catalog', async () => {
+  const { EMBEDDING_PROVIDER_CATALOG } = await import('../embedding-models.mjs')
+  const { EMBEDDING_PROVIDERS, validateProfileSettings } = await import('../profile-settings.mjs')
+  const profiles = Object.entries(EMBEDDING_PROVIDER_CATALOG).flatMap(([provider, definition]) => Object.keys(definition.models).map((model, index) => ({
+    id: `${provider}-${index + 1}`,
+    name: `${provider} ${model}`,
+    provider,
+    model,
+    credentialRef: `${provider.toUpperCase()}_API_KEY`,
+  })))
+
+  assert.deepEqual(EMBEDDING_PROVIDERS, Object.keys(EMBEDDING_PROVIDER_CATALOG))
+  assert.doesNotThrow(() => validateProfileSettings({
+    profiles: [localProfile],
+    activeProfileId: 'local-dev',
+    embeddingProfiles: profiles,
+  }))
+})
+
+test('embedding settings reject unsupported providers, models, dangling references, and duplicate bindings', async () => {
   const { validateProfileSettings } = await import('../profile-settings.mjs')
   const base = {
     profiles: [localProfile],
@@ -111,7 +130,7 @@ test('embedding settings reject unsupported providers, Gemini models, dangling r
   assert.throws(() => validateProfileSettings({
     ...base,
     embeddingProfiles: [{ ...base.embeddingProfiles[0], model: 'gemini-pro' }],
-  }), /Gemini model is unsupported/i)
+  }), /model is unsupported/i)
 
   assert.throws(() => validateProfileSettings({
     ...base,

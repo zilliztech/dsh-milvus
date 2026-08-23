@@ -1,4 +1,5 @@
 import { createEmbeddingProvider } from './embedding-provider.mjs'
+import { embeddingProbeDimension } from './embedding-models.mjs'
 
 const READY = 'Connected to the embedding provider.'
 const UNAVAILABLE_CREDENTIAL = 'The configured embedding API key is unavailable.'
@@ -15,7 +16,7 @@ export async function checkEmbeddingProfile(profile, {
   const result = await provider.embedQuery({
     profile,
     text: 'DSH embedding connection check',
-    dimensions: 128,
+    dimensions: embeddingProbeDimension(profile),
   })
   if (result.kind === 'ready') {
     return {

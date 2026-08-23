@@ -22,7 +22,11 @@ test('the browser bundle registers its Milvus settings card in the dsh plugin se
       },
     },
   }
-  vm.runInNewContext(source, context)
+  const instrumentedSource = source.replace(
+    'const embeddingDimensionRules = {',
+    'const embeddingDimensionRules = globalThis.__embeddingDimensionRules = {',
+  )
+  vm.runInNewContext(instrumentedSource, context)
 
   assert.equal(registration.id, manifest.name)
   const plugin = registration.factory((moduleName) => {
@@ -86,6 +90,26 @@ test('the browser bundle registers its Milvus settings card in the dsh plugin se
   assert.match(source, /Search capabilities/)
   assert.match(source, /Enable semantic search/)
   assert.match(source, /Advanced settings/)
+  const { EMBEDDING_PROVIDER_CATALOG } = await import('../embedding-models.mjs')
+  for (const [provider, definition] of Object.entries(EMBEDDING_PROVIDER_CATALOG)) {
+    assert.match(source, new RegExp(`\\b${provider}: \\{`))
+    assert.match(source, new RegExp(definition.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    for (const model of Object.keys(definition.models)) {
+      assert.equal(source.includes(model), true, `client catalog is missing ${provider}/${model}`)
+    }
+  }
+  const expectedClientRules = Object.fromEntries(Object.values(EMBEDDING_PROVIDER_CATALOG).flatMap((provider) => Object.entries(provider.models).map(([model, definition]) => {
+    const dimensions = definition.dimensions
+    const rule = dimensions.kind === 'range'
+      ? { minimum: dimensions.minimum, maximum: dimensions.maximum }
+      : { values: dimensions.kind === 'fixed' ? [dimensions.dimension] : dimensions.values }
+    return [model, rule]
+  })))
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.globalThis.__embeddingDimensionRules)),
+    expectedClientRules,
+  )
+  assert.match(source, /Only dimensions supported by the selected model can be chosen/)
   assert.doesNotMatch(source, /1\. Milvus deployment/)
   assert.doesNotMatch(source, /2\. Embedding provider/)
   assert.doesNotMatch(source, /3\. Dense retrieval binding/)
