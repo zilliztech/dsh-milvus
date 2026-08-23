@@ -368,6 +368,19 @@ MILVUS_TEST_ALLOW_MUTATION=1 \
 npm run test:integration:hybrid
 ```
 
+## Maintainer release
+
+Releases use npm Trusted Publishing. Update the version in `package.json` and
+`package-lock.json` in a pull request, run the local checks above, and merge the
+pull request into `master`. The `Publish npm package` GitHub Actions workflow
+then repeats the tests and publishes the new public package through OIDC. It
+does not use an npm token or ask a maintainer for an OTP.
+
+The workflow fails before publishing when that version already exists. Its
+manual trigger is intended for retrying a new, unpublished version after an
+infrastructure failure; it cannot republish an existing version. Do not run
+`npm publish` locally as part of the normal release path.
+
 ## License
 
 Apache-2.0. See [LICENSE](./LICENSE).
