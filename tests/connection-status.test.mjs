@@ -1,105 +1,41 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-test('connection status starts idle before a browser requests a check', async () => {
-  const { ConnectionStatusConfig } = await import('../connection-status.mjs')
+const activeSignal = new AbortController().signal
 
-  assert.deepEqual(ConnectionStatusConfig({}), { checks: {}, embeddingChecks: {}, collectionChecks: {} })
-})
-
-test('a browser check request is resolved on the Host and publishes only its safe outcome', async () => {
-  const { attachConnectionStatusMonitor } = await import('../connection-status.mjs')
-  let watcher
-  let status = {
-    request: { profileId: 'cloud-rag', requestId: 1 },
-    checks: {},
-  }
-  const statusScope = {
-    watch(callback) {
-      watcher = callback
-      return () => {}
-    },
-    get() {
-      return status
-    },
-    async update(patch) {
-      status = { ...status, ...patch }
-    },
-  }
+test('the authenticated RPC handler checks a deployment and never returns its credential', async () => {
+  const { createMilvusStatusRpcHandler } = await import('../connection-status.mjs')
   const secret = 'never-browser-visible'
-
-  attachConnectionStatusMonitor({
-    statusScope,
-    profileSource: () => ({ profiles: [{ id: 'cloud-rag', credentialRef: 'DSH_MILVUS_CLOUD_RAG_TOKEN' }] }),
+  const handler = createMilvusStatusRpcHandler({
+    profileSource: () => ({
+      profiles: [{
+        id: 'cloud-rag',
+        name: 'Cloud RAG',
+        kind: 'zilliz-cloud',
+        endpoint: 'https://127.0.0.1:1',
+        credentialRef: 'DSH_MILVUS_CLOUD_RAG_TOKEN',
+      }],
+      embeddingProfiles: [],
+      retrievalBindings: [],
+      retrievalPolicies: [],
+    }),
     resolveCredential: async () => ({ value: secret, source: 'file' }),
-    checkProfile: async (profile, { resolveCredential }) => {
-      assert.equal((await resolveCredential(profile.credentialRef)).value, secret)
-      return {
-        profileId: profile.id,
-        checkedAt: 1234,
-        state: 'ready',
-        message: 'Connected to Milvus.',
-      }
-    },
+    createTransport: () => { throw new Error('not used') },
   })
 
-  await watcher(status)
+  const response = await handler('connection-check', { profileId: 'cloud-rag' }, activeSignal)
 
-  assert.deepEqual(status.checks, {
-    'cloud-rag': {
-      profileId: 'cloud-rag',
-      checkedAt: 1234,
-      state: 'ready',
-      message: 'Connected to Milvus.',
-    },
-  })
-  assert.equal(JSON.stringify(status).includes(secret), false)
+  assert.equal(response.ok, true)
+  assert.equal(response.value.profileId, 'cloud-rag')
+  assert.equal(['ready', 'blocked', 'failed'].includes(response.value.state), true)
+  assert.equal(JSON.stringify(response).includes(secret), false)
 })
 
-test('a later browser request prevents an older probe from replacing its status', async () => {
-  const { attachConnectionStatusMonitor } = await import('../connection-status.mjs')
-  let watcher
-  const original = { request: { profileId: 'local-dev', requestId: 1 }, checks: {} }
-  let status = original
-  let release
-  const pending = new Promise((resolve) => { release = resolve })
-  const statusScope = {
-    watch(callback) { watcher = callback; return () => {} },
-    get() { return status },
-    async update() { throw new Error('stale probe must not write') },
-  }
-
-  attachConnectionStatusMonitor({
-    statusScope,
-    profileSource: () => ({ profiles: [{ id: 'local-dev' }] }),
-    resolveCredential: async () => undefined,
-    checkProfile: async () => {
-      await pending
-      return { profileId: 'local-dev', checkedAt: 1, state: 'ready', message: 'Connected to Milvus.' }
-    },
-  })
-
-  const running = watcher(original)
-  status = { request: { profileId: 'local-dev', requestId: 2 }, checks: {} }
-  release()
-  await running
-})
-
-test('an embedding check request resolves only the named profile and publishes no credential value', async () => {
-  const { attachEmbeddingStatusMonitor } = await import('../connection-status.mjs')
-  let watcher
-  let status = {
-    embeddingRequest: { profileId: 'openai-small', requestId: 7 },
-    embeddingChecks: {},
-  }
-  const statusScope = {
-    watch(callback) { watcher = callback; return () => {} },
-    get() { return status },
-    async update(patch) { status = { ...status, ...patch } },
-  }
+test('the embedding RPC resolves only the requested profile and publishes no credential value', async () => {
+  const { checkEmbeddingStatus } = await import('../connection-status.mjs')
   const secret = 'embedding-secret'
-  attachEmbeddingStatusMonitor({
-    statusScope,
+  const result = await checkEmbeddingStatus({
+    payload: { profileId: 'openai-small' },
     profileSource: () => ({
       embeddingProfiles: [{ id: 'openai-small', credentialRef: 'DSH_EMBEDDING_OPENAI_API_KEY' }],
     }),
@@ -110,27 +46,15 @@ test('an embedding check request resolves only the named profile and publishes n
     },
   })
 
-  await watcher(status)
-
-  assert.equal(status.embeddingChecks['openai-small'].state, 'ready')
-  assert.equal(JSON.stringify(status).includes(secret), false)
+  assert.equal(result.state, 'ready')
+  assert.equal(JSON.stringify(result).includes(secret), false)
 })
 
-test('a collection request lists and inspects schema through the Host with safe capability facts', async () => {
-  const { attachCollectionStatusMonitor, ConnectionStatusConfig } = await import('../connection-status.mjs')
-  let watcher
-  let status = {
-    collectionRequest: { profileId: 'local-dev', collection: 'documents', requestId: 11 },
-    collectionChecks: {},
-  }
-  const statusScope = {
-    watch(callback) { watcher = callback; return () => {} },
-    get() { return status },
-    async update(patch) { status = { ...status, ...patch } },
-  }
+test('the collection RPC lists and inspects schema through the Host with safe capability facts', async () => {
+  const { checkCollectionStatus } = await import('../connection-status.mjs')
   const secret = 'must-never-enter-collection-status'
-  attachCollectionStatusMonitor({
-    statusScope,
+  const result = await checkCollectionStatus({
+    payload: { profileId: 'local-dev', collection: 'documents' },
     profileSource: () => ({
       profiles: [{ id: 'local-dev', credentialRef: 'DSH_MILVUS_LOCAL_TOKEN' }],
       embeddingProfiles: [{ id: 'openai-small', provider: 'openai', model: 'text-embedding-3-small' }],
@@ -140,6 +64,7 @@ test('a collection request lists and inspects schema through the Host with safe 
         vectorField: 'dense_vector',
         embeddingProfileId: 'openai-small',
       }],
+      retrievalPolicies: [],
     }),
     createTransport: (profile) => {
       assert.equal(profile.credentialRef, 'DSH_MILVUS_LOCAL_TOKEN')
@@ -173,9 +98,6 @@ test('a collection request lists and inspects schema through the Host with safe 
     now: () => 100,
   })
 
-  await watcher(status)
-
-  const result = status.collectionChecks['local-dev']
   assert.equal(result.state, 'ready')
   assert.deepEqual(result.collections, ['documents', 'other'])
   assert.equal(result.collection.capabilities.dense.state, 'ready')
@@ -183,25 +105,12 @@ test('a collection request lists and inspects schema through the Host with safe 
   assert.equal(result.collection.capabilities.hybrid.state, 'ready')
   assert.equal(JSON.stringify(result).includes(secret), false)
   assert.equal('indexes' in result.collection, false)
-  assert.doesNotThrow(() => ConnectionStatusConfig(status))
 })
 
-test('a collection list result without an inspection passes the real status schema', async () => {
-  const { attachCollectionStatusMonitor, ConnectionStatusConfig } = await import('../connection-status.mjs')
-  let watcher
-  let status = {
-    collectionRequest: { profileId: 'local-dev', requestId: 12 },
-    collectionChecks: {},
-  }
-  const statusScope = {
-    watch(callback) { watcher = callback; return () => {} },
-    get() { return status },
-    async update(patch) {
-      status = ConnectionStatusConfig({ ...status, ...patch })
-    },
-  }
-  attachCollectionStatusMonitor({
-    statusScope,
+test('a collection list request returns a safe result without an inspection', async () => {
+  const { checkCollectionStatus } = await import('../connection-status.mjs')
+  const result = await checkCollectionStatus({
+    payload: { profileId: 'local-dev' },
     profileSource: () => ({ profiles: [{ id: 'local-dev' }] }),
     createTransport: () => ({
       listCollections: async () => ({ kind: 'ready', collections: ['documents'] }),
@@ -209,44 +118,53 @@ test('a collection list result without an inspection passes the real status sche
     now: () => 101,
   })
 
-  await watcher(status)
-
-  assert.equal(status.collectionChecks['local-dev'].collection, undefined)
-  assert.deepEqual(status.collectionChecks['local-dev'].collections, ['documents'])
+  assert.equal(result.collection, undefined)
+  assert.deepEqual(result.collections, ['documents'])
 })
 
-test('a newer collection selection prevents an older preflight from publishing stale schema', async () => {
-  const { attachCollectionStatusMonitor } = await import('../connection-status.mjs')
-  let watcher
-  const original = {
-    collectionRequest: { profileId: 'local-dev', collection: 'old', requestId: 1 },
-    collectionChecks: {},
-  }
-  let status = original
-  let release
-  const pending = new Promise((resolve) => { release = resolve })
-  const statusScope = {
-    watch(callback) { watcher = callback; return () => {} },
-    get() { return status },
-    async update() { throw new Error('stale collection preflight must not write') },
-  }
-  attachCollectionStatusMonitor({
-    statusScope,
-    profileSource: () => ({ profiles: [{ id: 'local-dev' }] }),
-    createTransport: () => ({
-      listCollections: async () => ({ kind: 'ready', collections: ['old', 'new'] }),
-      preflightCollection: async () => {
-        await pending
-        return { kind: 'blocked', message: 'Old result.' }
-      },
-    }),
+test('the RPC handler rejects malformed and unknown requests without dispatching', async () => {
+  const { createMilvusStatusRpcHandler } = await import('../connection-status.mjs')
+  const handler = createMilvusStatusRpcHandler({
+    profileSource: () => ({ profiles: [] }),
+    resolveCredential: async () => undefined,
+    createTransport: () => { throw new Error('not used') },
   })
 
-  const running = watcher(original)
-  status = {
-    collectionRequest: { profileId: 'local-dev', collection: 'new', requestId: 2 },
-    collectionChecks: {},
-  }
-  release()
-  await running
+  const malformed = await handler('connection-check', {}, activeSignal)
+  const unknown = await handler('delete-everything', {}, activeSignal)
+
+  assert.equal(malformed.ok, false)
+  assert.equal(malformed.error.code, 'dsh-milvus/bad-request')
+  assert.equal(unknown.ok, false)
+  assert.equal(unknown.error.code, 'dsh-milvus/not-found')
+})
+
+test('the authenticated Fetch route validates JSON and returns the safe dispatcher envelope', async () => {
+  const { createMilvusStatusFetchHandler } = await import('../connection-status.mjs')
+  const fetchStatus = createMilvusStatusFetchHandler({
+    profileSource: () => ({ profiles: [] }),
+    resolveCredential: async () => undefined,
+    createTransport: () => { throw new Error('not used') },
+  })
+
+  const response = await fetchStatus(new Request('http://localhost/api/dsh-milvus.status', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ method: 'connection-check', payload: { profileId: 'missing' } }),
+  }))
+  const result = await response.json()
+
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('cache-control'), 'no-store')
+  assert.equal(result.ok, true)
+  assert.equal(result.value.profileId, 'missing')
+  assert.equal(result.value.state, 'blocked')
+
+  const malformed = await fetchStatus(new Request('http://localhost/api/dsh-milvus.status', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{',
+  }))
+  assert.equal(malformed.status, 400)
+  assert.equal((await malformed.json()).error.code, 'dsh-milvus/bad-request')
 })

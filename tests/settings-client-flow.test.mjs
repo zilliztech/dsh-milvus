@@ -16,6 +16,7 @@ function makeScope(initial) {
       writes.push({ field, value: next })
       value = { ...value, [field]: next }
       for (const listener of listeners) listener()
+      return true
     },
     writes,
   }
@@ -24,38 +25,50 @@ function makeScope(initial) {
 test('the settings card manages profiles while sending a token only to dsh Credentials', async () => {
   const source = await readFile(clientUrl, 'utf8')
   let registration
-  vm.runInNewContext(source, {
-    globalThis: { __ModuleLoader__: { load(value) { registration = value } } },
-  })
-
   const profileScope = makeScope({ profiles: [], activeProfileId: '' })
-  const statusScope = makeScope({ checks: {} })
   const credentialViews = {}
   const credentialWrites = []
+  const statusCalls = []
   let entry
+  const statusFetch = async (url, init) => {
+    const { method, payload } = JSON.parse(init.body)
+    statusCalls.push({ url, httpMethod: init.method, method, payload })
+    const value = method === 'embedding-check'
+      ? { profileId: payload.profileId, state: 'ready', checkedAt: 1, message: 'Ready.' }
+      : method === 'collection-check'
+        ? { profileId: payload.profileId, state: 'ready', checkedAt: 2, message: 'Ready.', collections: ['documents'], requestedCollection: payload.collection }
+        : { profileId: payload.profileId, state: 'ready', checkedAt: 3, message: 'Ready.' }
+    return { ok: true, status: 200, json: async () => ({ ok: true, value }) }
+  }
+  vm.runInNewContext(source, {
+    globalThis: {
+      fetch: statusFetch,
+      __ModuleLoader__: { load(value) { registration = value } },
+    },
+  })
   const plugin = registration.factory((name) => {
     assert.equal(name, 'react')
     return { createElement: () => null, useSyncExternalStore: () => null }
   })
   plugin.apply({
     effect(register) { register() },
-    get() {
-      return {
-        api: {
-          credentials: {
-            describe: async ({ refs }) => ({ result: { ok: true, value: { credentials: Object.fromEntries(refs.map((ref) => [ref, credentialViews[ref]])) } } }),
-            set: async ({ ref, value }) => {
-              credentialWrites.push({ ref, value })
-              credentialViews[ref] = { configured: true, writable: true, source: 'file' }
-            },
-          },
+    configForms: {
+      get(namespace) {
+        assert.equal(namespace, 'dsh-milvus')
+        return profileScope
+      },
+    },
+    remote: {
+      credentials: {
+        describe: async (refs) => ({ ok: true, value: Object.fromEntries(refs.map((ref) => [ref, credentialViews[ref]])) }),
+        set: async (ref, value) => {
+          credentialWrites.push({ ref, value })
+          credentialViews[ref] = { configured: true, writable: true, source: 'file' }
+          return { ok: true, value: undefined }
         },
-      }
+      },
+      $on: () => () => {},
     },
-    settingsScope: {
-      bind({ namespace }) { return namespace === 'dsh-milvus' ? profileScope : statusScope },
-    },
-    remote: { $on: () => () => {} },
     slots: {
       inject(_name, callback) { callback() },
       register(_options, component) { entry = { _options, component }; return () => {} },
@@ -190,14 +203,13 @@ test('the settings card manages profiles while sending a token only to dsh Crede
   assert.deepEqual(JSON.parse(JSON.stringify(profileScope.getSnapshot().value.retrievalPolicies)), [])
 
   await controller.requestEmbeddingCheck(savedEmbedding)
-  assert.equal(statusScope.getSnapshot().value.embeddingRequest.profileId, 'openai-embedding')
+  assert.equal(controller.getSnapshot().embeddingChecks['openai-embedding'].state, 'ready')
 
   await controller.requestCollectionDiscovery(savedLocalProfile, 'documents')
-  assert.deepEqual(JSON.parse(JSON.stringify(statusScope.getSnapshot().value.collectionRequest)), {
-    profileId: 'local',
-    collection: 'documents',
-    requestId: statusScope.getSnapshot().value.collectionRequest.requestId,
-  })
+  assert.equal(controller.getSnapshot().collectionChecks.local.requestedCollection, 'documents')
+  assert.equal(statusCalls.at(-1).url, '/api/dsh-milvus.status')
+  assert.equal(statusCalls.at(-1).httpMethod, 'POST')
+  assert.equal(statusCalls.at(-1).method, 'collection-check')
 
   await controller.removeEmbeddingProfile('openai-embedding')
   assert.deepEqual(JSON.parse(JSON.stringify(profileScope.getSnapshot().value.embeddingProfiles)), [])

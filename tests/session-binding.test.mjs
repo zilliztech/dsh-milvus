@@ -11,13 +11,14 @@ const profile = {
 
 test('a new live session binds the selected profile once despite dsh bootstrap events', async () => {
   const { bindOrResolveSessionProfile } = await import('../session-binding.mjs')
+  const events = [
+    { type: 'permission/preset' },
+    { type: 'sandbox/mode' },
+    { type: 'approval/policy' },
+    { type: 'agent/inbox/spliced' },
+  ]
   const session = {
-    events: [
-      { type: 'permission/preset' },
-      { type: 'sandbox/mode' },
-      { type: 'approval/policy' },
-      { type: 'agent/inbox/spliced' },
-    ],
+    snapshotEvents: () => Object.freeze([...events]),
   }
 
   const initial = bindOrResolveSessionProfile(session, {
@@ -31,7 +32,7 @@ test('a new live session binds the selected profile once despite dsh bootstrap e
 
   assert.deepEqual(initial, profile)
   assert.equal(afterEndpointEdit, undefined)
-  assert.deepEqual(session.events, [
+  assert.deepEqual(events, [
     { type: 'permission/preset' },
     { type: 'sandbox/mode' },
     { type: 'approval/policy' },
@@ -41,7 +42,7 @@ test('a new live session binds the selected profile once despite dsh bootstrap e
 
 test('a reloaded session without a live binding fails closed instead of adopting the active profile', async () => {
   const { bindOrResolveSessionProfile } = await import('../session-binding.mjs')
-  const session = { events: [{ type: 'user/message' }] }
+  const session = { snapshotEvents: () => Object.freeze([{ type: 'user/message' }]) }
 
   assert.equal(bindOrResolveSessionProfile(session, {
     activeProfileId: 'local-dev',

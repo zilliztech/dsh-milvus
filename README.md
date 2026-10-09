@@ -1,6 +1,6 @@
 # Milvus for DSH
 
-Milvus for DSH lets a DSH Web agent inspect and search a Milvus deployment
+Milvus for DSH lets a DSH Desktop or Web agent inspect and search a Milvus deployment
 from chat. It supports Local Milvus and Zilliz Cloud, exact entity lookup,
 scalar queries, BM25 full-text search, and dense+BM25 hybrid retrieval.
 Natural-language dense search uses a DSH-managed embedding provider; BM25 runs
@@ -11,15 +11,18 @@ create collections, insert data, change indexes, or delete anything.
 
 ## Requirements
 
-- DSH Web `0.1.0-rc.7` or later
+- DSH Desktop or Web `0.2.0-rc.2`
 - Node.js 22.19 or later
-- A Milvus HTTP(S) endpoint reachable from the DSH Web host
+- A Milvus HTTP(S) endpoint reachable from the DSH host
 - Optional: an API key from one of the supported embedding providers for dense
   and hybrid search
 
 ## Install
 
-Install the package into the DSH Web profile:
+In DSH Desktop, open **Plugins → Add plugin**, enter
+`@zilliz/dsh-milvus`, install it, and restart the app.
+
+For DSH Web, install the package into the Web profile:
 
 ```bash
 dsh plugin --profile web add @zilliz/dsh-milvus
@@ -29,16 +32,16 @@ dsh web
 If `dsh` is not installed globally:
 
 ```bash
-npx --yes @deepseek-ai/dsh@0.1.0-rc.7 plugin --profile web add @zilliz/dsh-milvus
-npx --yes @deepseek-ai/dsh@0.1.0-rc.7 web
+npx --yes @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add @zilliz/dsh-milvus
+npx --yes @deepseek-ai/dsh@0.2.0-rc.2 web
 ```
 
-After installing or updating the plugin, restart DSH Web and refresh the
-browser page.
+After installing or updating the plugin, restart DSH Desktop or Web. Refresh
+the browser page when using Web.
 
 ## Set up the plugin
 
-Open **Settings → Plugins → Milvus for DSH**. The setup follows the same order
+Open **Settings → Built-in plugins → Milvus**. The setup follows the same order
 as using Milvus: connect a deployment, choose a collection, then enable only
 the search capabilities you need.
 
@@ -54,9 +57,9 @@ After saving, use **Test connection**. The card collapses the form into a
 connection summary so the deployment details no longer compete with collection
 setup.
 
-The endpoint is resolved from the machine running DSH Web. When Milvus runs in
+The endpoint is resolved from the machine running DSH. When Milvus runs in
 another container or on another host, use an address reachable from the DSH
-Web host—not a loopback address inside the Milvus container.
+host—not a loopback address inside the Milvus container.
 
 The active connection is bound when a new chat starts. Changing it affects new
 chats; it does not silently switch an existing chat to a different deployment.

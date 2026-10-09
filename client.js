@@ -5,7 +5,7 @@ globalThis.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
     const SETTINGS_NAMESPACE = 'dsh-milvus'
-    const STATUS_NAMESPACE = 'dsh-milvus-status'
+    const STATUS_ROUTE = '/api/dsh-milvus.status'
 
     const defaultIdentity = (kind) => kind === 'zilliz-cloud'
       ? { id: 'zilliz-cloud', name: 'Zilliz Cloud' }
@@ -141,27 +141,29 @@ globalThis.__ModuleLoader__.load({
 
     /** A status-only credential projection. It never stores a token value. */
     class MilvusProfileController {
-      constructor(scope, statusScope, api) {
+      constructor(scope, statusApi, credentialsApi) {
         this.scope = scope
-        this.statusScope = statusScope
-        this.api = api
+        this.statusApi = statusApi
+        this.credentialsApi = credentialsApi
         this.listeners = new Set()
         this.credentials = {}
+        this.checks = {}
+        this.embeddingChecks = {}
+        this.collectionChecks = {}
+        this.requestIds = { connection: {}, embedding: {}, collection: {} }
+        this.requestId = Date.now()
         this.pending = false
         this.error = ''
-        this.requestId = Date.now()
         this.snapshot = this.buildSnapshot()
         scope.subscribe(() => {
           this.readCredentials()
           this.emit()
         })
-        statusScope.subscribe(() => this.emit())
         this.readCredentials()
       }
 
       buildSnapshot() {
         const section = this.scope.getSnapshot().value ?? {}
-        const status = this.statusScope.getSnapshot().value ?? {}
         return {
           profiles: Array.isArray(section.profiles) ? section.profiles : [],
           activeProfileId: typeof section.activeProfileId === 'string' ? section.activeProfileId : '',
@@ -169,9 +171,9 @@ globalThis.__ModuleLoader__.load({
           retrievalBindings: Array.isArray(section.retrievalBindings) ? section.retrievalBindings : [],
           retrievalPolicies: Array.isArray(section.retrievalPolicies) ? section.retrievalPolicies : [],
           credentials: this.credentials,
-          checks: status.checks ?? {},
-          embeddingChecks: status.embeddingChecks ?? {},
-          collectionChecks: status.collectionChecks ?? {},
+          checks: this.checks,
+          embeddingChecks: this.embeddingChecks,
+          collectionChecks: this.collectionChecks,
           pending: this.pending,
           error: this.error,
         }
@@ -206,9 +208,9 @@ globalThis.__ModuleLoader__.load({
           return
         }
         try {
-          const response = await this.api.credentials.describe({ refs })
-          if (!response.result?.ok) return
-          const rows = response.result.value?.credentials ?? {}
+          const response = await this.credentialsApi.describe(refs)
+          if (!response.ok) return
+          const rows = response.value ?? {}
           this.credentials = Object.fromEntries(refs.map((ref) => [ref, {
             configured: rows[ref]?.configured === true,
             writable: rows[ref]?.writable !== false,
@@ -218,6 +220,11 @@ globalThis.__ModuleLoader__.load({
         } catch {
           // A status read must not clear configuration or expose provider errors.
         }
+      }
+
+      async writeField(field, value) {
+        const accepted = await this.scope.set(field, value)
+        if (!accepted) throw new Error('DSH rejected the Milvus settings update.')
       }
 
       async run(work) {
@@ -254,14 +261,14 @@ globalThis.__ModuleLoader__.load({
           const profiles = existing
             ? current.profiles.map((item) => item.id === originalId ? profile : item)
             : [...current.profiles, profile]
-          await this.scope.set('profiles', profiles)
-          if (!current.activeProfileId) await this.scope.set('activeProfileId', profile.id)
+          await this.writeField('profiles', profiles)
+          if (!current.activeProfileId) await this.writeField('activeProfileId', profile.id)
           return profile
         })
       }
 
       selectProfile(id) {
-        return this.run(() => this.scope.set('activeProfileId', id))
+        return this.run(() => this.writeField('activeProfileId', id))
       }
 
       removeProfile(id) {
@@ -271,10 +278,10 @@ globalThis.__ModuleLoader__.load({
           const retrievalBindings = current.retrievalBindings.filter((binding) => binding.milvusProfileId !== id)
           const retrievalPolicies = current.retrievalPolicies.filter((policy) => policy.milvusProfileId !== id)
           const nextActive = current.activeProfileId === id ? (profiles[0]?.id ?? '') : current.activeProfileId
-          if (retrievalBindings.length !== current.retrievalBindings.length) await this.scope.set('retrievalBindings', retrievalBindings)
-          if (retrievalPolicies.length !== current.retrievalPolicies.length) await this.scope.set('retrievalPolicies', retrievalPolicies)
-          if (nextActive !== current.activeProfileId) await this.scope.set('activeProfileId', nextActive)
-          await this.scope.set('profiles', profiles)
+          if (retrievalBindings.length !== current.retrievalBindings.length) await this.writeField('retrievalBindings', retrievalBindings)
+          if (retrievalPolicies.length !== current.retrievalPolicies.length) await this.writeField('retrievalPolicies', retrievalPolicies)
+          if (nextActive !== current.activeProfileId) await this.writeField('activeProfileId', nextActive)
+          await this.writeField('profiles', profiles)
         })
       }
 
@@ -294,7 +301,7 @@ globalThis.__ModuleLoader__.load({
           const embeddingProfiles = existing
             ? current.embeddingProfiles.map((item) => item.id === originalId ? profile : item)
             : [...current.embeddingProfiles, profile]
-          await this.scope.set('embeddingProfiles', embeddingProfiles)
+          await this.writeField('embeddingProfiles', embeddingProfiles)
           return profile
         })
       }
@@ -303,8 +310,8 @@ globalThis.__ModuleLoader__.load({
         return this.run(async () => {
           const current = this.getSnapshot()
           const retrievalBindings = current.retrievalBindings.filter((binding) => binding.embeddingProfileId !== id)
-          if (retrievalBindings.length !== current.retrievalBindings.length) await this.scope.set('retrievalBindings', retrievalBindings)
-          await this.scope.set('embeddingProfiles', current.embeddingProfiles.filter((profile) => profile.id !== id))
+          if (retrievalBindings.length !== current.retrievalBindings.length) await this.writeField('retrievalBindings', retrievalBindings)
+          await this.writeField('embeddingProfiles', current.embeddingProfiles.filter((profile) => profile.id !== id))
         })
       }
 
@@ -320,7 +327,7 @@ globalThis.__ModuleLoader__.load({
           const retrievalBindings = originalKey
             ? current.retrievalBindings.map((item) => bindingKey(item) === originalKey ? binding : item)
             : [...current.retrievalBindings, binding]
-          await this.scope.set('retrievalBindings', retrievalBindings)
+          await this.writeField('retrievalBindings', retrievalBindings)
           return binding
         })
       }
@@ -328,7 +335,7 @@ globalThis.__ModuleLoader__.load({
       removeRetrievalBinding(key) {
         return this.run(async () => {
           const current = this.getSnapshot()
-          await this.scope.set('retrievalBindings', current.retrievalBindings.filter((binding) => bindingKey(binding) !== key))
+          await this.writeField('retrievalBindings', current.retrievalBindings.filter((binding) => bindingKey(binding) !== key))
         })
       }
 
@@ -366,7 +373,7 @@ globalThis.__ModuleLoader__.load({
           const retrievalPolicies = originalKey
             ? current.retrievalPolicies.map((item) => policyKey(item) === originalKey ? policy : item)
             : [...current.retrievalPolicies, policy]
-          await this.scope.set('retrievalPolicies', retrievalPolicies)
+          await this.writeField('retrievalPolicies', retrievalPolicies)
           return policy
         })
       }
@@ -374,14 +381,15 @@ globalThis.__ModuleLoader__.load({
       removeRetrievalPolicy(key) {
         return this.run(async () => {
           const current = this.getSnapshot()
-          await this.scope.set('retrievalPolicies', current.retrievalPolicies.filter((policy) => policyKey(policy) !== key))
+          await this.writeField('retrievalPolicies', current.retrievalPolicies.filter((policy) => policyKey(policy) !== key))
         })
       }
 
       writeCredential(profile, value) {
         if (!profile.credentialRef || !value) return Promise.resolve(false)
         return this.run(async () => {
-          await this.api.credentials.set({ ref: profile.credentialRef, value })
+          const response = await this.credentialsApi.set(profile.credentialRef, value)
+          if (!response.ok) throw new Error(response.error.message)
           await this.readCredentials([profile.credentialRef])
           return this.credentials[profile.credentialRef]?.configured === true
         })
@@ -402,42 +410,63 @@ globalThis.__ModuleLoader__.load({
           }
           const credential = current.credentials[embeddingProfile.credentialRef]
           if (!credential?.configured && !apiKey) throw new Error('Enter an API key to enable semantic search.')
-          if (apiKey) await this.api.credentials.set({ ref: embeddingProfile.credentialRef, value: apiKey })
+          if (apiKey) {
+            const response = await this.credentialsApi.set(embeddingProfile.credentialRef, apiKey)
+            if (!response.ok) throw new Error(response.error.message)
+          }
 
           if (!current.embeddingProfiles.some((item) => item.id === embeddingProfile.id)) {
-            await this.scope.set('embeddingProfiles', [...current.embeddingProfiles, embeddingProfile])
+            await this.writeField('embeddingProfiles', [...current.embeddingProfiles, embeddingProfile])
           }
           const binding = { milvusProfileId, collection, vectorField, embeddingProfileId: embeddingProfile.id }
           const retrievalBindings = [
             ...current.retrievalBindings.filter((item) => item.milvusProfileId !== milvusProfileId || item.collection !== collection),
             binding,
           ]
-          await this.scope.set('retrievalBindings', retrievalBindings)
+          await this.writeField('retrievalBindings', retrievalBindings)
           await this.readCredentials([embeddingProfile.credentialRef])
           return { embeddingProfile, binding }
         })
       }
 
       requestCheck(profile) {
-        return this.run(() => this.statusScope.set('request', {
-          profileId: profile.id,
-          requestId: this.nextRequestId(),
-        }))
+        return this.run(async () => {
+          const requestId = this.nextRequestId()
+          this.requestIds.connection[profile.id] = requestId
+          const result = await this.statusApi.call('connection-check', { profileId: profile.id, requestId })
+          if (this.requestIds.connection[profile.id] !== requestId) return result
+          this.checks = { ...this.checks, [profile.id]: result }
+          this.emit()
+          return result
+        })
       }
 
       requestEmbeddingCheck(profile) {
-        return this.run(() => this.statusScope.set('embeddingRequest', {
-          profileId: profile.id,
-          requestId: this.nextRequestId(),
-        }))
+        return this.run(async () => {
+          const requestId = this.nextRequestId()
+          this.requestIds.embedding[profile.id] = requestId
+          const result = await this.statusApi.call('embedding-check', { profileId: profile.id, requestId })
+          if (this.requestIds.embedding[profile.id] !== requestId) return result
+          this.embeddingChecks = { ...this.embeddingChecks, [profile.id]: result }
+          this.emit()
+          return result
+        })
       }
 
       requestCollectionDiscovery(profile, collection) {
-        return this.run(() => this.statusScope.set('collectionRequest', {
-          profileId: profile.id,
-          ...(collection ? { collection } : {}),
-          requestId: this.nextRequestId(),
-        }))
+        return this.run(async () => {
+          const requestId = this.nextRequestId()
+          this.requestIds.collection[profile.id] = requestId
+          const result = await this.statusApi.call('collection-check', {
+            profileId: profile.id,
+            ...(collection ? { collection } : {}),
+            requestId,
+          })
+          if (this.requestIds.collection[profile.id] !== requestId) return result
+          this.collectionChecks = { ...this.collectionChecks, [profile.id]: result }
+          this.emit()
+          return result
+        })
       }
 
       refreshCredential(ref) {
@@ -831,7 +860,7 @@ globalThis.__ModuleLoader__.load({
           ])
         : null
 
-      return h('li', { className: 'dsh-milvus-card' }, [
+      return h('section', { className: 'dsh-milvus-card' }, [
         h('h3', { key: 'title' }, 'Milvus for DSH'),
         h('p', { className: 'dsh-milvus-intro', key: 'intro' }, 'Connect Milvus, choose a collection, and DSH will show what already works. Embedding setup appears only when you enable semantic search.'),
         state.error ? h('p', { role: 'alert', className: 'dsh-milvus-error', key: 'error' }, state.error) : null,
@@ -855,17 +884,33 @@ globalThis.__ModuleLoader__.load({
 
     return {
       name: 'dsh-milvus',
-      inject: ['slots', 'connection', 'remote', 'settingsScope'],
+      inject: ['slots', 'remote', 'remote.credentials', 'configForms'],
       apply(ctx) {
+        const statusApi = {
+          async call(method, payload) {
+            const httpResponse = await globalThis.fetch(STATUS_ROUTE, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ method, payload }),
+            })
+            if (!httpResponse.ok) throw new Error(`Milvus status request failed with HTTP ${httpResponse.status}.`)
+            const response = await httpResponse.json()
+            if (!response || typeof response !== 'object' || typeof response.ok !== 'boolean') {
+              throw new Error('Milvus status request returned an invalid response.')
+            }
+            if (!response.ok) throw new Error(response.error?.message ?? 'Milvus status request failed.')
+            return response.value
+          },
+        }
         const controller = new MilvusProfileController(
-          ctx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE }),
-          ctx.settingsScope.bind({ namespace: STATUS_NAMESPACE }),
-          ctx.get('connection').api,
+          ctx.configForms.get(SETTINGS_NAMESPACE),
+          statusApi,
+          ctx.remote.credentials,
         )
         installStyles(ctx)
         ctx.effect(() => ctx.remote.$on('credentials/updated', (ref) => controller.refreshCredential(ref)), 'dsh-milvus: credential status refresh')
-        ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-          name: 'settings.plugin.item', id: 'dsh-milvus', key: 'dsh-milvus', inject: () => ({ controller }),
+        ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
+          name: 'settings.plugins.tab', id: 'dsh-milvus', order: 20, label: 'Milvus', inject: () => ({ controller }),
         }, MilvusSettingsCard))
       },
     }
