@@ -50,12 +50,25 @@ export const RetrievalPolicyConfig = z.object({
 })
 
 export const ProfileSettingsConfig = z.object({
-  profiles: z.array(ProfileConfig).default([]).description('Configured Milvus deployment profiles.'),
-  activeProfileId: z.string().default('').description('Profile selected for new dsh sessions.'),
-  embeddingProfiles: z.array(EmbeddingProfileConfig).default([]).description('DSH-managed embedding provider profiles.'),
-  retrievalBindings: z.array(RetrievalBindingConfig).default([]).description('Collection vector fields bound to embedding profiles.'),
-  retrievalPolicies: z.array(RetrievalPolicyConfig).default([]).description('Optional collection BM25 route and hybrid rerank defaults.'),
+  profiles: z.array(ProfileConfig).default([]).description('Configured Milvus deployment profiles.').volatile(),
+  activeProfileId: z.string().default('').description('Profile selected for new dsh sessions.').volatile(),
+  embeddingProfiles: z.array(EmbeddingProfileConfig).default([]).description('DSH-managed embedding provider profiles.').volatile(),
+  retrievalBindings: z.array(RetrievalBindingConfig).default([]).description('Collection vector fields bound to embedding profiles.').volatile(),
+  retrievalPolicies: z.array(RetrievalPolicyConfig).default([]).description('Optional collection BM25 route and hybrid rerank defaults.').volatile(),
 })
+
+/** Read one detached snapshot from dsh 0.2 volatile configuration references. */
+export function snapshotProfileSettings(config) {
+  const settings = {
+    profiles: config.profiles.get(),
+    activeProfileId: config.activeProfileId.get(),
+    embeddingProfiles: config.embeddingProfiles.get(),
+    retrievalBindings: config.retrievalBindings.get(),
+    retrievalPolicies: config.retrievalPolicies.get(),
+  }
+  validateProfileSettings(settings)
+  return settings
+}
 
 function fail(message) {
   throw new TypeError(`Invalid Milvus profile settings: ${message}`)

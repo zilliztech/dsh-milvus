@@ -4,10 +4,15 @@ import test from 'node:test'
 
 const packageUrl = new URL('../package.json', import.meta.url)
 
-test('the public Web onboarding path requires dsh rc.7 settings exposure', async () => {
+test('the public Desktop and Web onboarding path requires the dsh 0.2 runtime contracts', async () => {
   const manifest = JSON.parse(await readFile(packageUrl, 'utf8'))
 
-  assert.equal(manifest.peerDependencies['@deepseek-ai/dsh-settings'], '^0.1.0-rc.7')
-  assert.equal(manifest.peerDependencies['@deepseek-ai/dsh-credentials'], '^0.1.0-rc.7')
-  assert.equal(manifest.peerDependencies['@deepseek-ai/dsh-tools'], '^0.1.0-rc.7')
+  for (const name of [
+    '@deepseek-ai/dsh-client-connection',
+    '@deepseek-ai/dsh-settings',
+    '@deepseek-ai/dsh-credentials',
+    '@deepseek-ai/dsh-tools',
+  ]) assert.equal(manifest.peerDependencies[name], '0.2.0-rc.2')
+  assert.equal(manifest.peerDependencies['@deepseek-ai/cordis'], '~4.0.4')
+  assert.equal(manifest.peerDependencies['@deepseek-ai/schemastery'], '~3.18.4')
 })

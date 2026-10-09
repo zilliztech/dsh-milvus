@@ -33,7 +33,7 @@ test('the browser bundle registers its Milvus settings card in the dsh plugin se
     assert.equal(moduleName, 'react')
     return { createElement: () => null, useSyncExternalStore: () => ({}) }
   })
-  assert.deepEqual([...plugin.inject], ['slots', 'connection', 'remote', 'settingsScope'])
+  assert.deepEqual([...plugin.inject], ['slots', 'remote', 'remote.credentials', 'configForms'])
 
   let slotName
   let entry
@@ -42,23 +42,23 @@ test('the browser bundle registers its Milvus settings card in the dsh plugin se
   const scope = {
     getSnapshot: () => ({ value: { profiles: [], activeProfileId: '' } }),
     subscribe: () => () => {},
-    set: async () => {},
+    set: async () => true,
   }
   plugin.apply({
     effect(register) {
       register()
     },
-    get(service) {
-      assert.equal(service, 'connection')
-      return { api: { credentials: { describe: async () => ({ result: { ok: true, value: { credentials: {} } } }) } } }
-    },
-    settingsScope: {
-      bind({ namespace }) {
+    configForms: {
+      get(namespace) {
         boundNamespaces.push(namespace)
         return scope
       },
     },
     remote: {
+      credentials: {
+        describe: async () => ({ ok: true, value: {} }),
+        set: async () => ({ ok: true, value: undefined }),
+      },
       $on(event, callback) {
         credentialInvalidation = { event, callback }
         return () => {}
@@ -75,12 +75,13 @@ test('the browser bundle registers its Milvus settings card in the dsh plugin se
     },
   })
 
-  assert.equal(slotName, 'settings.plugin.item')
-  assert.equal(entry?.options.name, 'settings.plugin.item')
+  assert.equal(slotName, 'settings.plugins.tab')
+  assert.equal(entry?.options.name, 'settings.plugins.tab')
   assert.equal(entry?.options.id, 'dsh-milvus')
-  assert.equal(entry?.options.key, 'dsh-milvus')
+  assert.equal(entry?.options.order, 20)
+  assert.equal(entry?.options.label, 'Milvus')
   assert.equal(typeof entry?.component, 'function')
-  assert.deepEqual(boundNamespaces, ['dsh-milvus', 'dsh-milvus-status'])
+  assert.deepEqual(boundNamespaces, ['dsh-milvus'])
   assert.equal(credentialInvalidation?.event, 'credentials/updated')
   const controller = entry?.options.inject?.().controller
   assert.equal(typeof controller?.writeCredential, 'function')

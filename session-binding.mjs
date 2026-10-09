@@ -12,7 +12,11 @@ function sameProfile(left, right) {
 }
 
 function hasUserMessage(session) {
-  return session.events.some((event) => event.type === 'user/message')
+  const events = typeof session.snapshotEvents === 'function'
+    ? session.snapshotEvents()
+    : session.events
+  if (!Array.isArray(events)) throw new TypeError('dsh-milvus requires a readable session event snapshot')
+  return events.some((event) => event.type === 'user/message')
 }
 
 /**
